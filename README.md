@@ -26,6 +26,35 @@ source .venv/bin/activate
 python main.py
 ```
 
+## Schedule Daily With launchd
+
+This repository includes a macOS LaunchAgent that runs the script every day at 5:00 AM local time.
+
+Files:
+- `scripts/run_daily_task_automation.sh`
+- `launchd/com.storercd.daily-task-automation.plist`
+
+Install and load it:
+
+```bash
+mkdir -p logs ~/Library/LaunchAgents
+chmod +x scripts/run_daily_task_automation.sh
+cp launchd/com.storercd.daily-task-automation.plist ~/Library/LaunchAgents/
+launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.daily-task-automation.plist 2>/dev/null || true
+launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.daily-task-automation.plist
+launchctl enable gui/"$(id -u)"/com.storercd.daily-task-automation
+```
+
+Useful commands:
+
+```bash
+launchctl print gui/"$(id -u)"/com.storercd.daily-task-automation
+launchctl kickstart -k gui/"$(id -u)"/com.storercd.daily-task-automation
+tail -f logs/launchd.stdout.log logs/launchd.stderr.log
+```
+
+To change the schedule, edit `Hour` and `Minute` in the plist, copy it back into `~/Library/LaunchAgents/`, then run the `bootout` and `bootstrap` commands again.
+
 ## Notes
 
 - The script uses your machine's local timezone to decide what counts as "today".
