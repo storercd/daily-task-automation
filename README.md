@@ -26,6 +26,16 @@ source .venv/bin/activate
 python main.py
 ```
 
+## Test
+
+Install dev dependencies and run the unit test suite:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+```
+
 ## Schedule Daily With launchd
 
 This repository includes a macOS LaunchAgent that runs the script every day at 5:00 AM local time.
