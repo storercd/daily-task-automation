@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -17,6 +18,9 @@ TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
 RUN_CALENDAR_SYNC = True
 RUN_DUE_CARD_TRIAGE = True
+MAX_REQUEST_ATTEMPTS = 3
+INITIAL_RETRY_DELAY_SECONDS = 2
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -85,8 +89,54 @@ def get_local_timezone() -> ZoneInfo:
     return ZoneInfo(str(local_zone))
 
 
+def get_retry_delay_seconds(attempt_number: int) -> int:
+    return INITIAL_RETRY_DELAY_SECONDS * (2 ** (attempt_number - 1))
+
+
+def is_retryable_http_error(error: requests.HTTPError) -> bool:
+    response = error.response
+    return response is not None and response.status_code in RETRYABLE_STATUS_CODES
+
+
+def is_retryable_request_error(error: Exception) -> bool:
+    if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(error, requests.HTTPError):
+        return is_retryable_http_error(error)
+    return False
+
+
+def log_retry_attempt(message: str, attempt_number: int) -> None:
+    delay_seconds = get_retry_delay_seconds(attempt_number)
+    print(
+        f"{message}. Retrying in {delay_seconds} second(s) "
+        f"(attempt {attempt_number + 1}/{MAX_REQUEST_ATTEMPTS}).",
+        file=sys.stderr,
+    )
+    time_module.sleep(delay_seconds)
+
+
+def request_with_backoff(method: str, url: str, retry_enabled: bool = True, **kwargs) -> requests.Response:
+    for attempt_number in range(1, MAX_REQUEST_ATTEMPTS + 1):
+        try:
+            response = requests.request(method, url, timeout=30, **kwargs)
+            if retry_enabled and response.status_code in RETRYABLE_STATUS_CODES and attempt_number < MAX_REQUEST_ATTEMPTS:
+                log_retry_attempt(
+                    f"Received retryable HTTP status {response.status_code} for {method} {url}",
+                    attempt_number,
+                )
+                continue
+            return response
+        except (requests.ConnectionError, requests.Timeout) as error:
+            if not retry_enabled or attempt_number == MAX_REQUEST_ATTEMPTS:
+                raise error
+            log_retry_attempt(f"Transient request failure for {method} {url}: {error}", attempt_number)
+
+    raise SyncError(f"Request retries exhausted for {method} {url}")
+
+
 def fetch_calendar(ical_url: str) -> Calendar:
-    response = requests.get(ical_url, timeout=30)
+    response = request_with_backoff("GET", ical_url)
     if response.status_code == 404 and "calendar.google.com" in ical_url:
         raise SyncError(
             "Google Calendar returned 404 for the iCal URL. Use the calendar's 'Secret address in iCal format' from Settings and sharing -> Integrate calendar."
@@ -160,10 +210,10 @@ def parse_events_for_today(calendar: Calendar, today: date, timezone: ZoneInfo) 
     return matching_events, warnings
 
 
-def trello_request(method: str, path: str, api_key: str, api_token: str, **kwargs):
+def trello_request(method: str, path: str, api_key: str, api_token: str, allow_retries: bool = True, **kwargs):
     params = kwargs.pop("params", {})
     params.update({"key": api_key, "token": api_token})
-    response = requests.request(method, f"{TRELLO_API_BASE_URL}{path}", params=params, timeout=30, **kwargs)
+    response = request_with_backoff(method, f"{TRELLO_API_BASE_URL}{path}", retry_enabled=allow_retries, params=params, **kwargs)
     response.raise_for_status()
     return response.json()
 
@@ -293,19 +343,44 @@ def build_card_description(event: CalendarEvent) -> str:
     return "\n\n".join(description_parts)
 
 
-def create_card(config: Config, list_id: str, event: CalendarEvent) -> None:
-    trello_request(
-        "POST",
-        "/cards",
-        config.trello_api_key,
-        config.trello_api_token,
-        params={
-            "idList": list_id,
-            "name": event.summary,
-            "desc": build_card_description(event),
-            "pos": "top",
-        },
-    )
+def card_exists_for_event(config: Config, list_id: str, event_key: str) -> bool:
+    existing_event_keys, _ = load_existing_event_markers(config, list_id)
+    return event_key in existing_event_keys
+
+
+def create_card(config: Config, list_id: str, event: CalendarEvent) -> bool:
+    card_params = {
+        "idList": list_id,
+        "name": event.summary,
+        "desc": build_card_description(event),
+        "pos": "top",
+    }
+
+    for attempt_number in range(1, MAX_REQUEST_ATTEMPTS + 1):
+        try:
+            trello_request(
+                "POST",
+                "/cards",
+                config.trello_api_key,
+                config.trello_api_token,
+                allow_retries=False,
+                params=card_params,
+            )
+            return True
+        except Exception as error:
+            if card_exists_for_event(config, list_id, event.event_key):
+                print(
+                    f"Recovered existing card after transient create failure: {event.summary}",
+                    file=sys.stderr,
+                )
+                return False
+
+            if not is_retryable_request_error(error) or attempt_number == MAX_REQUEST_ATTEMPTS:
+                raise error
+
+            log_retry_attempt(f"Transient failure creating card for {event.summary}: {error}", attempt_number)
+
+    raise SyncError(f"Card creation retries exhausted for event {event.summary}")
 
 
 def run_calendar_sync(config: Config, timezone: ZoneInfo, today: date, triage_list_id: str) -> None:
@@ -331,10 +406,15 @@ def run_calendar_sync(config: Config, timezone: ZoneInfo, today: date, triage_li
             print(f"Migrated existing legacy card for event: {event.summary}")
             continue
 
-        create_card(config, triage_list_id, event)
+        created_new_card = create_card(config, triage_list_id, event)
         existing_event_keys.add(event.event_key)
-        created_count += 1
-        print(f"Created card: {event.summary}")
+        if created_new_card:
+            created_count += 1
+            print(f"Created card: {event.summary}")
+            continue
+
+        skipped_count += 1
+        print(f"Skipped existing card after retry recovery: {event.summary}")
 
     print(
         f"Calendar sync processed {len(events)} event(s) for {today.isoformat()}: "
