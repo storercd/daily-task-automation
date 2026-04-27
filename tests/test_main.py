@@ -221,11 +221,122 @@ def test_run_due_card_triage_moves_only_due_incomplete_cards(monkeypatch, config
 
 
 def test_run_returns_zero_when_routines_enabled(monkeypatch, config, timezone):
+    status_updates = []
+
     monkeypatch.setattr(main, "load_config", lambda: config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: {})
+    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: status_updates.append(dict(statuses)))
+    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, today, list_id: None)
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, today, board_id, list_id: None)
 
     assert main.run() == 0
+    assert status_updates
+
+
+def test_build_dates_to_process_includes_backfill_and_failed_dates():
+    today = date(2026, 4, 27)
+    statuses = {
+        "2026-04-23": {"status": "success"},
+        "2026-04-24": {"status": "failed"},
+        "2026-04-25": {"status": "success"},
+    }
+
+    dates_to_process = main.build_dates_to_process(today, statuses)
+
+    assert dates_to_process == [
+        date(2026, 4, 24),
+        date(2026, 4, 26),
+        date(2026, 4, 27),
+    ]
+
+
+def test_build_dates_to_process_skips_successful_today():
+    today = date(2026, 4, 27)
+    statuses = {
+        "2026-04-26": {"status": "success"},
+        "2026-04-27": {"status": "success"},
+    }
+
+    dates_to_process = main.build_dates_to_process(today, statuses)
+
+    assert dates_to_process == []
+
+
+def test_build_dates_to_process_retries_failed_today():
+    today = date(2026, 4, 27)
+    statuses = {
+        "2026-04-27": {"status": "failed"},
+    }
+
+    dates_to_process = main.build_dates_to_process(today, statuses)
+
+    assert dates_to_process == [today]
+
+
+def test_run_creates_date_status_file_and_processes_today_only_when_missing(monkeypatch, config, timezone, tmp_path):
+    status_file_path = tmp_path / "processed_dates.json"
+    saved_snapshots = []
+    processed_days = []
+
+    monkeypatch.setattr(main, "DATE_STATUS_FILE_PATH", str(status_file_path))
+    monkeypatch.setattr(main, "load_config", lambda: config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: processed_days.append(day))
+    monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
+
+    def fake_save(file_path, statuses):
+        saved_snapshots.append(dict(statuses))
+
+    monkeypatch.setattr(main, "save_processed_date_statuses", fake_save)
+    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
+
+    assert main.run() == 0
+    assert processed_days == [date(2026, 4, 27)]
+    assert len(saved_snapshots) >= 2
+
+
+def test_run_backfills_missing_dates_from_status_file(monkeypatch, config, timezone):
+    stored_statuses = {"2026-04-25": {"status": "success", "attempt_count": 1}}
+    status_saves = []
+    processed_days = []
+
+    monkeypatch.setattr(main, "load_config", lambda: config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+    monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: dict(stored_statuses))
+    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: status_saves.append(dict(statuses)))
+    monkeypatch.setattr(main.os.path, "exists", lambda file_path: True)
+    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: processed_days.append(day))
+    monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
+
+    assert main.run() == 0
+    assert processed_days == [date(2026, 4, 26), date(2026, 4, 27)]
+    assert status_saves
+
+
+def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
+    saved_statuses = []
+
+    monkeypatch.setattr(main, "load_config", lambda: config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+    monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: {})
+    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: saved_statuses.append(dict(statuses)))
+    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
+    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: (_ for _ in ()).throw(main.SyncError("boom")))
+    monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
+
+    with pytest.raises(main.SyncError, match="Daily automation failed"):
+        main.run()
+
+    assert saved_statuses
+    latest_statuses = saved_statuses[-1]
+    assert latest_statuses["2026-04-27"]["status"] == "failed"

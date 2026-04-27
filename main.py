@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time as time_module
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -21,6 +22,7 @@ RUN_DUE_CARD_TRIAGE = True
 MAX_REQUEST_ATTEMPTS = 3
 INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+DATE_STATUS_FILE_PATH = os.path.join("logs", "processed_dates.json")
 
 
 @dataclass
@@ -52,6 +54,88 @@ class TrelloCard:
 
 class SyncError(Exception):
     pass
+
+
+def ensure_parent_directory(file_path: str) -> None:
+    parent_directory = os.path.dirname(file_path)
+    if parent_directory:
+        os.makedirs(parent_directory, exist_ok=True)
+
+
+def load_processed_date_statuses(file_path: str) -> dict[str, dict[str, str | int]]:
+    if not os.path.exists(file_path):
+        return {}
+
+    with open(file_path, "r", encoding="utf-8") as file_handle:
+        try:
+            loaded_data = json.load(file_handle)
+        except json.JSONDecodeError as error:
+            raise SyncError(f"Invalid processed-date status file: {file_path}") from error
+
+    if not isinstance(loaded_data, dict):
+        raise SyncError(f"Processed-date status file must contain a JSON object: {file_path}")
+
+    normalized_statuses: dict[str, dict[str, str | int]] = {}
+    for key, value in loaded_data.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        normalized_statuses[key] = value
+
+    return normalized_statuses
+
+
+def save_processed_date_statuses(file_path: str, statuses: dict[str, dict[str, str | int]]) -> None:
+    ensure_parent_directory(file_path)
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        json.dump(statuses, file_handle, indent=2, sort_keys=True)
+        file_handle.write("\n")
+
+
+def parse_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def build_dates_to_process(
+    today: date,
+    statuses: dict[str, dict[str, str | int]],
+) -> list[date]:
+    valid_recorded_dates = sorted(
+        parsed_date
+        for date_key in statuses
+        for parsed_date in [parse_iso_date(date_key)]
+        if parsed_date is not None and parsed_date <= today
+    )
+
+    failed_dates = sorted(
+        parsed_date
+        for date_key, status in statuses.items()
+        for parsed_date in [parse_iso_date(date_key)]
+        if parsed_date is not None
+        and parsed_date < today
+        and status.get("status") != "success"
+    )
+
+    backfill_dates: list[date] = []
+    if valid_recorded_dates:
+        next_unrecorded_day = valid_recorded_dates[-1] + timedelta(days=1)
+        current_day = next_unrecorded_day
+        while current_day <= today:
+            backfill_dates.append(current_day)
+            current_day += timedelta(days=1)
+
+    all_dates: set[date] = set()
+    today_key = today.isoformat()
+    today_status = statuses.get(today_key, {})
+    if today_status.get("status") != "success":
+        all_dates.add(today)
+
+    all_dates.update(backfill_dates)
+    all_dates.update(failed_dates)
+
+    return sorted(all_dates)
 
 
 def load_config() -> Config:
@@ -460,11 +544,51 @@ def run() -> int:
     board_id = find_board_id(config)
     triage_list_id = find_list_id(config, board_id)
 
-    if RUN_CALENDAR_SYNC:
-        run_calendar_sync(config, timezone, today, triage_list_id)
+    status_file_exists = os.path.exists(DATE_STATUS_FILE_PATH)
+    processed_date_statuses = load_processed_date_statuses(DATE_STATUS_FILE_PATH)
 
-    if RUN_DUE_CARD_TRIAGE:
-        run_due_card_triage(config, timezone, today, board_id, triage_list_id)
+    if not status_file_exists:
+        save_processed_date_statuses(DATE_STATUS_FILE_PATH, processed_date_statuses)
+
+    dates_to_process = [today] if not status_file_exists else build_dates_to_process(today, processed_date_statuses)
+    if len(dates_to_process) > 1:
+        print(f"Backfill required for {len(dates_to_process) - 1} date(s) before today.")
+
+    failed_dates: list[str] = []
+    for processing_day in dates_to_process:
+        processing_day_key = processing_day.isoformat()
+        previous_status = processed_date_statuses.get(processing_day_key, {})
+        previous_attempt_count = previous_status.get("attempt_count", 0)
+        attempt_count = previous_attempt_count + 1 if isinstance(previous_attempt_count, int) else 1
+
+        print(f"Processing date: {processing_day_key}")
+        try:
+            if RUN_CALENDAR_SYNC:
+                run_calendar_sync(config, timezone, processing_day, triage_list_id)
+
+            if RUN_DUE_CARD_TRIAGE:
+                run_due_card_triage(config, timezone, processing_day, board_id, triage_list_id)
+
+            processed_date_statuses[processing_day_key] = {
+                "status": "success",
+                "attempt_count": attempt_count,
+                "last_run_at": datetime.now(timezone).isoformat(),
+                "last_error": "",
+            }
+        except Exception as error:
+            processed_date_statuses[processing_day_key] = {
+                "status": "failed",
+                "attempt_count": attempt_count,
+                "last_run_at": datetime.now(timezone).isoformat(),
+                "last_error": str(error),
+            }
+            failed_dates.append(processing_day_key)
+            print(f"ERROR processing date {processing_day_key}: {error}", file=sys.stderr)
+        finally:
+            save_processed_date_statuses(DATE_STATUS_FILE_PATH, processed_date_statuses)
+
+    if failed_dates:
+        raise SyncError(f"Daily automation failed for date(s): {', '.join(failed_dates)}")
 
     return 0
 
