@@ -1,3 +1,9 @@
+"""Synchronize Google Calendar all-day tasks into a Trello triage list.
+
+The script creates missing cards for today's all-day events, migrates legacy UID
+markers, and moves due incomplete cards into the configured triage list.
+"""
+
 from __future__ import annotations
 
 import json
@@ -27,6 +33,16 @@ DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
 
 @dataclass
 class Config:
+    """Store required runtime settings loaded from environment variables.
+
+    Attributes:
+        ical_url: iCal feed URL used to fetch calendar events.
+        trello_api_key: Trello API key.
+        trello_api_token: Trello API token.
+        trello_board_name: Human-readable board name used for lookup.
+        trello_list_name: Human-readable triage list name used for lookup.
+    """
+
     ical_url: str
     trello_api_key: str
     trello_api_token: str
@@ -36,6 +52,16 @@ class Config:
 
 @dataclass
 class CalendarEvent:
+    """Represent one calendar occurrence that may map to a Trello card.
+
+    Attributes:
+        uid: Calendar UID from the source event.
+        event_key: Deduplication marker formatted as uid::occurrence.
+        summary: Event title used as Trello card name.
+        description: Optional event description copied to card description.
+        is_all_day: Whether DTSTART represents an all-day event.
+    """
+
     uid: str
     event_key: str
     summary: str
@@ -45,6 +71,16 @@ class CalendarEvent:
 
 @dataclass
 class TrelloCard:
+    """Capture the card fields needed for due-date triage decisions.
+
+    Attributes:
+        card_id: Trello card identifier.
+        name: Card title.
+        due: Parsed due datetime in local timezone, if set.
+        due_complete: Whether Trello marks the card due date as complete.
+        list_id: Identifier of the current containing list.
+    """
+
     card_id: str
     name: str
     due: datetime | None
@@ -53,15 +89,35 @@ class TrelloCard:
 
 
 class SyncError(Exception):
+    """Raise when a domain-level synchronization step cannot be completed."""
+
     pass
 
 
 def ensure_parent_directory(file_path: str) -> None:
+    """Ensure the target file's parent directory exists.
+
+    Args:
+        file_path: Path to a file whose parent directory should be created.
+    """
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_processed_date_statuses(file_path: str) -> dict[str, dict[str, str | int]]:
+    """Load per-day processing statuses from disk.
+
+    Invalid keys or values are ignored so minor manual edits do not break runs.
+
+    Args:
+        file_path: JSON file path that stores per-day status metadata.
+
+    Returns:
+        A mapping keyed by ISO date with status metadata dictionaries.
+
+    Raises:
+        SyncError: If the file contains invalid JSON or a non-object root.
+    """
     path = Path(file_path)
     if not path.exists():
         return {}
@@ -85,6 +141,12 @@ def load_processed_date_statuses(file_path: str) -> dict[str, dict[str, str | in
 
 
 def save_processed_date_statuses(file_path: str, statuses: dict[str, dict[str, str | int]]) -> None:
+    """Persist per-day processing statuses as sorted JSON.
+
+    Args:
+        file_path: Destination JSON file path.
+        statuses: Status data keyed by ISO date.
+    """
     ensure_parent_directory(file_path)
     with Path(file_path).open("w", encoding="utf-8") as file_handle:
         json.dump(statuses, file_handle, indent=2, sort_keys=True)
@@ -92,6 +154,14 @@ def save_processed_date_statuses(file_path: str, statuses: dict[str, dict[str, s
 
 
 def parse_iso_date(value: str) -> date | None:
+    """Parse an ISO date string.
+
+    Args:
+        value: Date string expected in YYYY-MM-DD format.
+
+    Returns:
+        Parsed date when valid; otherwise None.
+    """
     try:
         return date.fromisoformat(value)
     except ValueError:
@@ -99,14 +169,24 @@ def parse_iso_date(value: str) -> date | None:
 
 
 def build_dates_to_process(
-    today: date,
+    current_date: date,
     statuses: dict[str, dict[str, str | int]],
 ) -> list[date]:
+    """Compute dates that should be processed in this run.
+
+    Args:
+        current_date: Local current date for the run.
+        statuses: Existing status map keyed by ISO date.
+
+    Returns:
+        Sorted set of dates including failed days, missing backfill days, and
+        current_date when it has not already succeeded.
+    """
     valid_recorded_dates = sorted(
         parsed_date
         for date_key in statuses
         for parsed_date in [parse_iso_date(date_key)]
-        if parsed_date is not None and parsed_date <= today
+        if parsed_date is not None and parsed_date <= current_date
     )
 
     failed_dates = sorted(
@@ -114,7 +194,7 @@ def build_dates_to_process(
         for date_key, status in statuses.items()
         for parsed_date in [parse_iso_date(date_key)]
         if parsed_date is not None
-        and parsed_date < today
+        and parsed_date < current_date
         and status.get("status") != "success"
     )
 
@@ -122,15 +202,15 @@ def build_dates_to_process(
     if valid_recorded_dates:
         next_unrecorded_day = valid_recorded_dates[-1] + timedelta(days=1)
         current_day = next_unrecorded_day
-        while current_day <= today:
+        while current_day <= current_date:
             backfill_dates.append(current_day)
             current_day += timedelta(days=1)
 
     all_dates: set[date] = set()
-    today_key = today.isoformat()
-    today_status = statuses.get(today_key, {})
-    if today_status.get("status") != "success":
-        all_dates.add(today)
+    current_date_key = current_date.isoformat()
+    current_date_status = statuses.get(current_date_key, {})
+    if current_date_status.get("status") != "success":
+        all_dates.add(current_date)
 
     all_dates.update(backfill_dates)
     all_dates.update(failed_dates)
@@ -139,6 +219,14 @@ def build_dates_to_process(
 
 
 def load_config() -> Config:
+    """Load and validate required environment variables.
+
+    Returns:
+        Config populated from environment variables and .env values.
+
+    Raises:
+        SyncError: If one or more required environment variables are missing.
+    """
     load_dotenv()
 
     config = Config(
@@ -167,6 +255,11 @@ def load_config() -> Config:
 
 
 def get_local_timezone() -> ZoneInfo:
+    """Return the system local timezone as ZoneInfo.
+
+    Returns:
+        Local timezone normalized to ZoneInfo.
+    """
     local_zone = get_localzone()
     if isinstance(local_zone, ZoneInfo):
         return local_zone
@@ -174,15 +267,39 @@ def get_local_timezone() -> ZoneInfo:
 
 
 def get_retry_delay_seconds(attempt_number: int) -> int:
+    """Compute exponential backoff delay for a retry attempt.
+
+    Args:
+        attempt_number: 1-based retry attempt index.
+
+    Returns:
+        Delay in seconds before the next retry.
+    """
     return INITIAL_RETRY_DELAY_SECONDS * (2 ** (attempt_number - 1))
 
 
 def is_retryable_http_error(error: requests.HTTPError) -> bool:
+    """Determine whether an HTTP error is retryable.
+
+    Args:
+        error: HTTPError that may include a response object.
+
+    Returns:
+        True when the response status code is in RETRYABLE_STATUS_CODES.
+    """
     response = error.response
     return response is not None and response.status_code in RETRYABLE_STATUS_CODES
 
 
 def is_retryable_request_error(error: Exception) -> bool:
+    """Determine whether a request exception should be retried.
+
+    Args:
+        error: Exception raised during HTTP interaction.
+
+    Returns:
+        True for transient connection/timeout errors and retryable HTTP errors.
+    """
     if isinstance(error, (requests.ConnectionError, requests.Timeout)):
         return True
     if isinstance(error, requests.HTTPError):
@@ -191,6 +308,12 @@ def is_retryable_request_error(error: Exception) -> bool:
 
 
 def log_retry_attempt(message: str, attempt_number: int) -> None:
+    """Log retry details and sleep using exponential backoff.
+
+    Args:
+        message: Error context to include in retry logging.
+        attempt_number: 1-based attempt index used to compute delay.
+    """
     delay_seconds = get_retry_delay_seconds(attempt_number)
     print(
         f"{message}. Retrying in {delay_seconds} second(s) "
@@ -206,6 +329,22 @@ def request_with_backoff(
     retry_enabled: bool = True,
     **kwargs,
 ) -> requests.Response:
+    """Issue an HTTP request with retry and backoff.
+
+    Args:
+        method: HTTP method passed to requests.request.
+        url: Absolute URL to request.
+        retry_enabled: Whether transient failures should be retried.
+        **kwargs: Additional keyword arguments forwarded to requests.request.
+
+    Returns:
+        Successful or final-response requests.Response object.
+
+    Raises:
+        requests.ConnectionError: If final attempt fails with connection error.
+        requests.Timeout: If final attempt fails with timeout.
+        SyncError: If retry loop exhausts without returning a response.
+    """
     for attempt_number in range(1, MAX_REQUEST_ATTEMPTS + 1):
         try:
             response = requests.request(method, url, timeout=30, **kwargs)
@@ -229,6 +368,18 @@ def request_with_backoff(
 
 
 def fetch_calendar(ical_url: str) -> Calendar:
+    """Fetch and parse an iCal feed.
+
+    Args:
+        ical_url: Public or secret iCal URL.
+
+    Returns:
+        Parsed Calendar object.
+
+    Raises:
+        SyncError: If Google Calendar returns 404 for a non-secret URL.
+        requests.HTTPError: If the HTTP response status is not successful.
+    """
     response = request_with_backoff("GET", ical_url)
     if response.status_code == 404 and "calendar.google.com" in ical_url:
         raise SyncError(
@@ -241,18 +392,44 @@ def fetch_calendar(ical_url: str) -> Calendar:
 
 
 def normalize_description(raw_description: str | None) -> str:
+    """Normalize optional event description text.
+
+    Args:
+        raw_description: Description value from an iCal component.
+
+    Returns:
+        Trimmed description or an empty string.
+    """
     if not raw_description:
         return ""
     return raw_description.strip()
 
 
 def format_occurrence_value(value: date | datetime, timezone: ZoneInfo) -> str:
+    """Format an occurrence value for event-key generation.
+
+    Args:
+        value: Occurrence date or datetime from DTSTART.
+        timezone: Local timezone for datetime normalization.
+
+    Returns:
+        ISO-8601 string representing the occurrence.
+    """
     if isinstance(value, datetime):
         return as_local_datetime(value, timezone).isoformat()
     return value.isoformat()
 
 
 def as_local_datetime(value: date | datetime, timezone: ZoneInfo) -> datetime:
+    """Convert a date-like value into local timezone-aware datetime.
+
+    Args:
+        value: Date or datetime source value.
+        timezone: Target local timezone.
+
+    Returns:
+        Timezone-aware datetime in local timezone.
+    """
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone)
@@ -261,17 +438,38 @@ def as_local_datetime(value: date | datetime, timezone: ZoneInfo) -> datetime:
 
 
 def build_event_key(uid: str, occurrence_value: date | datetime, timezone: ZoneInfo) -> str:
+    """Build a unique deduplication key for an event occurrence.
+
+    Args:
+        uid: Calendar event UID.
+        occurrence_value: Event DTSTART value for one occurrence.
+        timezone: Local timezone used to normalize datetime values.
+
+    Returns:
+        Marker in the format "{uid}::{occurrence}".
+    """
     return f"{uid}::{format_occurrence_value(occurrence_value, timezone)}"
 
 
 def parse_events_for_today(
     calendar: Calendar,
-    today: date,
+    target_date: date,
     timezone: ZoneInfo,
 ) -> tuple[list[CalendarEvent], list[str]]:
+    """Extract occurrences that belong to the target local date.
+
+    Args:
+        calendar: Parsed iCal calendar.
+        target_date: Local date to extract.
+        timezone: Local timezone used for datetime interpretation.
+
+    Returns:
+        Tuple of normalized CalendarEvent entries and warning strings for
+        skipped or problematic events.
+    """
     matching_events: list[CalendarEvent] = []
     warnings: list[str] = []
-    start_of_day = datetime.combine(today, time.min, tzinfo=timezone)
+    start_of_day = datetime.combine(target_date, time.min, tzinfo=timezone)
     end_of_day = start_of_day + timedelta(days=1)
 
     for component in recurring_ical_events.of(calendar).between(start_of_day, end_of_day):
@@ -281,7 +479,7 @@ def parse_events_for_today(
             if isinstance(start_value, datetime)
             else start_value
         )
-        if occurrence_day != today:
+        if occurrence_day != target_date:
             continue
 
         uid = str(component.get("UID", "")).strip()
@@ -321,6 +519,22 @@ def trello_request(
     allow_retries: bool = True,
     **kwargs,
 ):
+    """Call a Trello API endpoint and return the decoded JSON body.
+
+    Args:
+        method: HTTP method.
+        path: Trello API path beginning with '/'.
+        api_key: Trello API key.
+        api_token: Trello API token.
+        allow_retries: Whether transient network/status errors are retried.
+        **kwargs: Extra request arguments, including optional params mapping.
+
+    Returns:
+        Parsed JSON response payload.
+
+    Raises:
+        requests.HTTPError: If Trello returns an unsuccessful response.
+    """
     params = kwargs.pop("params", {})
     params.update({"key": api_key, "token": api_token})
     response = request_with_backoff(
@@ -335,12 +549,32 @@ def trello_request(
 
 
 def parse_trello_datetime(value: str | None, timezone: ZoneInfo) -> datetime | None:
+    """Parse Trello RFC3339 datetime and convert to local timezone.
+
+    Args:
+        value: Trello datetime string or None.
+        timezone: Target local timezone.
+
+    Returns:
+        Localized datetime when value is present; otherwise None.
+    """
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone)
 
 
 def find_board_id(config: Config) -> str:
+    """Resolve configured Trello board name to board ID.
+
+    Args:
+        config: Runtime configuration with target board name.
+
+    Returns:
+        Trello board ID for the configured board name.
+
+    Raises:
+        SyncError: If the board name is not found for the authenticated user.
+    """
     boards = trello_request(
         "GET",
         "/members/me/boards",
@@ -355,6 +589,18 @@ def find_board_id(config: Config) -> str:
 
 
 def find_list_id(config: Config, board_id: str) -> str:
+    """Resolve configured Trello list name to list ID on a board.
+
+    Args:
+        config: Runtime configuration with target list name.
+        board_id: Board ID that should contain the target list.
+
+    Returns:
+        Trello list ID for the configured list name.
+
+    Raises:
+        SyncError: If the list name is not found on the target board.
+    """
     lists = trello_request(
         "GET",
         f"/boards/{board_id}/lists",
@@ -369,6 +615,16 @@ def find_list_id(config: Config, board_id: str) -> str:
 
 
 def load_open_board_cards(config: Config, board_id: str, timezone: ZoneInfo) -> list[TrelloCard]:
+    """Load open cards from a board with normalized due-date fields.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        board_id: Board ID to scan.
+        timezone: Local timezone for due-date conversion.
+
+    Returns:
+        List of TrelloCard records for non-archived cards.
+    """
     cards = trello_request(
         "GET",
         f"/boards/{board_id}/cards",
@@ -396,6 +652,13 @@ def load_open_board_cards(config: Config, board_id: str, timezone: ZoneInfo) -> 
 
 
 def move_card_to_list(config: Config, card_id: str, list_id: str) -> None:
+    """Move a Trello card to the top of a list.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        card_id: Card ID to move.
+        list_id: Destination list ID.
+    """
     trello_request(
         "PUT",
         f"/cards/{card_id}",
@@ -406,6 +669,14 @@ def move_card_to_list(config: Config, card_id: str, list_id: str) -> None:
 
 
 def extract_event_uid(card_description: str) -> str | None:
+    """Extract the GCAL UID marker from card description text.
+
+    Args:
+        card_description: Trello card description field.
+
+    Returns:
+        Marker value when present; otherwise None.
+    """
     for line in card_description.splitlines():
         if line.startswith(UID_MARKER_PREFIX):
             return line.replace(UID_MARKER_PREFIX, "", 1).strip()
@@ -413,6 +684,15 @@ def extract_event_uid(card_description: str) -> str | None:
 
 
 def load_existing_event_markers(config: Config, list_id: str) -> tuple[set[str], dict[str, list[str]]]:
+    """Collect existing event markers from cards already in a list.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        list_id: Trello list ID to inspect.
+
+    Returns:
+        Tuple containing current event keys and legacy UID mappings to card IDs.
+    """
     cards = trello_request(
         "GET",
         f"/lists/{list_id}/cards",
@@ -438,6 +718,14 @@ def load_existing_event_markers(config: Config, list_id: str) -> tuple[set[str],
 
 
 def migrate_legacy_card_marker(config: Config, card_id: str, legacy_uid: str, event: CalendarEvent) -> None:
+    """Upgrade a legacy card marker from UID-only to occurrence marker.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        card_id: Card ID whose description should be updated.
+        legacy_uid: Legacy UID marker currently stored on the card.
+        event: Event whose occurrence marker should replace the legacy marker.
+    """
     card = trello_request(
         "GET",
         f"/cards/{card_id}",
@@ -464,6 +752,14 @@ def migrate_legacy_card_marker(config: Config, card_id: str, legacy_uid: str, ev
 
 
 def build_card_description(event: CalendarEvent) -> str:
+    """Build Trello card description text for an event.
+
+    Args:
+        event: Calendar event used to populate description and marker.
+
+    Returns:
+        Description content with optional body text and required UID marker.
+    """
     description_parts = []
     if event.description:
         description_parts.append(event.description)
@@ -472,11 +768,36 @@ def build_card_description(event: CalendarEvent) -> str:
 
 
 def card_exists_for_event(config: Config, list_id: str, event_key: str) -> bool:
+    """Check whether a list already contains an event occurrence marker.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        list_id: Trello list ID to check.
+        event_key: Event occurrence marker to search for.
+
+    Returns:
+        True when the marker already exists in the target list.
+    """
     existing_event_keys, _ = load_existing_event_markers(config, list_id)
     return event_key in existing_event_keys
 
 
 def create_card(config: Config, list_id: str, event: CalendarEvent) -> bool:
+    """Create a Trello card for an event with transient-error recovery.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        list_id: Trello list ID where the card should be created.
+        event: Event to convert into a Trello card.
+
+    Returns:
+        True when a card was newly created; False when recovery detected that
+        the card already exists.
+
+    Raises:
+        Exception: Re-raises non-retryable or final-attempt create failures.
+        SyncError: If retry loop exhausts without success.
+    """
     card_params = {
         "idList": list_id,
         "name": event.summary,
@@ -511,9 +832,22 @@ def create_card(config: Config, list_id: str, event: CalendarEvent) -> bool:
     raise SyncError(f"Card creation retries exhausted for event {event.summary}")
 
 
-def run_calendar_sync(config: Config, timezone: ZoneInfo, today: date, triage_list_id: str) -> None:
+def run_calendar_sync(
+    config: Config,
+    timezone: ZoneInfo,
+    processing_day: date,
+    triage_list_id: str,
+) -> None:
+    """Sync today's calendar events into the triage list.
+
+    Args:
+        config: Runtime configuration with calendar and Trello settings.
+        timezone: Local timezone for date-sensitive event parsing.
+        processing_day: Date whose events should be synchronized.
+        triage_list_id: Destination Trello list ID.
+    """
     calendar = fetch_calendar(config.ical_url)
-    events, warnings = parse_events_for_today(calendar, today, timezone)
+    events, warnings = parse_events_for_today(calendar, processing_day, timezone)
     existing_event_keys, legacy_cards_by_uid = load_existing_event_markers(config, triage_list_id)
 
     created_count = 0
@@ -545,14 +879,29 @@ def run_calendar_sync(config: Config, timezone: ZoneInfo, today: date, triage_li
         print(f"Skipped existing card after retry recovery: {event.summary}")
 
     print(
-        f"Calendar sync processed {len(events)} event(s) for {today.isoformat()}: "
+        f"Calendar sync processed {len(events)} event(s) for {processing_day.isoformat()}: "
         f"{created_count} created, {skipped_count} skipped, {migrated_count} migrated."
     )
     for warning in warnings:
         print(f"WARNING: {warning}")
 
 
-def run_due_card_triage(config: Config, timezone: ZoneInfo, today: date, board_id: str, triage_list_id: str) -> None:
+def run_due_card_triage(
+    config: Config,
+    timezone: ZoneInfo,
+    processing_day: date,
+    board_id: str,
+    triage_list_id: str,
+) -> None:
+    """Move due and incomplete cards into the triage list.
+
+    Args:
+        config: Runtime configuration with Trello credentials.
+        timezone: Local timezone for due-date comparison.
+        processing_day: Current local date cutoff for due triage.
+        board_id: Board ID to scan for open cards.
+        triage_list_id: Destination list for eligible cards.
+    """
     cards = load_open_board_cards(config, board_id, timezone)
 
     moved_count = 0
@@ -562,7 +911,7 @@ def run_due_card_triage(config: Config, timezone: ZoneInfo, today: date, board_i
         if card.due is None or card.due_complete:
             continue
 
-        if card.due.date() > today:
+        if card.due.date() > processing_day:
             continue
 
         eligible_count += 1
@@ -576,15 +925,23 @@ def run_due_card_triage(config: Config, timezone: ZoneInfo, today: date, board_i
         print(f"Moved due card to triage: {card.name}")
 
     print(
-        f"Due-card triage processed {eligible_count} eligible card(s) for {today.isoformat()}: "
+        f"Due-card triage processed {eligible_count} eligible card(s) for {processing_day.isoformat()}: "
         f"{moved_count} moved, {already_in_triage_count} already in triage."
     )
 
 
 def run() -> int:
+    """Run daily automation and persist per-date outcomes.
+
+    Returns:
+        Zero when all required dates are processed successfully.
+
+    Raises:
+        SyncError: If one or more dates fail during processing.
+    """
     config = load_config()
     timezone = get_local_timezone()
-    today = datetime.now(timezone).date()
+    current_date = datetime.now(timezone).date()
     board_id = find_board_id(config)
     triage_list_id = find_list_id(config, board_id)
 
@@ -594,7 +951,11 @@ def run() -> int:
     if not status_file_exists:
         save_processed_date_statuses(DATE_STATUS_FILE_PATH, processed_date_statuses)
 
-    dates_to_process = [today] if not status_file_exists else build_dates_to_process(today, processed_date_statuses)
+    dates_to_process = (
+        [current_date]
+        if not status_file_exists
+        else build_dates_to_process(current_date, processed_date_statuses)
+    )
     if len(dates_to_process) > 1:
         print(f"Backfill required for {len(dates_to_process) - 1} date(s) before today.")
 
