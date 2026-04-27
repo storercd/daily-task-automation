@@ -1,9 +1,10 @@
 # Daily Task Automation
 
-This script runs two daily routines against your `To Do` Trello board:
+This script runs daily Trello routines plus a monthly low-tide routine:
 
 - It reads all events for the current local day from a Google Calendar iCal feed and creates Trello cards in the `Triage` list.
 - It moves Trello cards with a due date of today or earlier into the `Triage` list.
+- It fetches NOAA monthly high/low tide predictions for Everett, WA (station `9447659`), finds low tides below `0.00` feet, and creates one-hour Google Calendar events for those times.
 
 Behavior:
 - All-day events are imported.
@@ -28,6 +29,22 @@ Behavior:
 source .venv/bin/activate
 python main.py
 ```
+
+Run monthly routine explicitly:
+
+```bash
+source .venv/bin/activate
+python main.py monthly
+```
+
+Monthly routine configuration (`.env`):
+
+- `NOAA_STATION_ID` (default `9447659`)
+- `LOW_TIDE_CALENDAR_ID` (Google Calendar ID where events are created)
+- OAuth for event creation:
+	- Option A: `GOOGLE_OAUTH_ACCESS_TOKEN`
+	- Option B (recommended for automation): `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`
+	- Optional override: `GOOGLE_OAUTH_TOKEN_URL` (defaults to `https://oauth2.googleapis.com/token`)
 
 ## Test
 

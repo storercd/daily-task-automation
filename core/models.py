@@ -37,3 +37,24 @@ class TrelloCard:
     due: datetime | None
     due_complete: bool
     list_id: str
+
+
+@dataclass
+class MonthlyConfig:
+    """Store monthly low-tide task settings loaded from environment variables."""
+
+    noaa_station_id: str
+    target_calendar_id: str
+    google_oauth_access_token: str
+    google_oauth_client_id: str
+    google_oauth_client_secret: str
+    google_oauth_refresh_token: str
+    google_oauth_token_url: str
+
+
+@dataclass
+class LowTidePrediction:
+    """Represent one low-tide prediction used for calendar event creation."""
+
+    timestamp: datetime
+    height_feet: float

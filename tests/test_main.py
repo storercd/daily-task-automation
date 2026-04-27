@@ -406,3 +406,86 @@ def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
     assert saved_statuses
     latest_statuses = saved_statuses[-1]
     assert latest_statuses["2026-04-27"]["status"] == "failed"
+
+
+def test_run_monthly_creates_and_skips_existing_events(monkeypatch, timezone, capsys):
+    monthly_config = main.MonthlyConfig(
+        noaa_station_id="9447659",
+        target_calendar_id="calendar-id",
+        google_oauth_access_token="access-token",
+        google_oauth_client_id="",
+        google_oauth_client_secret="",
+        google_oauth_refresh_token="",
+        google_oauth_token_url="https://oauth2.googleapis.com/token",
+    )
+    month_start = date(2026, 4, 1)
+    month_end = date(2026, 4, 30)
+    prediction_one = main.LowTidePrediction(
+        timestamp=datetime(2026, 4, 7, 6, 5, tzinfo=timezone),
+        height_feet=-1.53,
+    )
+    prediction_two = main.LowTidePrediction(
+        timestamp=datetime(2026, 4, 9, 7, 15, tzinfo=timezone),
+        height_feet=-0.12,
+    )
+    existing_marker = main.build_low_tide_marker(monthly_config.noaa_station_id, prediction_two)
+    created_events = []
+
+    monkeypatch.setattr(main, "load_monthly_config", lambda: monthly_config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "build_month_bounds", lambda current_date: (month_start, month_end))
+    monkeypatch.setattr(
+        main.NOAA_TIDE_SERVICE,
+        "fetch_negative_low_tides",
+        lambda station_id, month_start, month_end, timezone: [prediction_one, prediction_two],
+    )
+    monkeypatch.setattr(main.GOOGLE_CALENDAR_EVENT_SERVICE, "get_access_token", lambda config: "token")
+    monkeypatch.setattr(
+        main.GOOGLE_CALENDAR_EVENT_SERVICE,
+        "load_existing_event_markers",
+        lambda config, access_token, window_start, window_end: {existing_marker},
+    )
+    monkeypatch.setattr(
+        main.GOOGLE_CALENDAR_EVENT_SERVICE,
+        "create_event",
+        lambda config, access_token, summary, start_at, end_at, marker, timezone_name: created_events.append(
+            (summary, start_at, end_at, marker, timezone_name)
+        ),
+    )
+
+    assert main.run_monthly() == 0
+
+    assert len(created_events) == 1
+    assert created_events[0][0] == "Low Tide: -1.53"
+    assert created_events[0][1] == prediction_one.timestamp
+    assert created_events[0][2] == prediction_one.timestamp + main.MONTHLY_EVENT_DURATION
+
+    output = capsys.readouterr().out
+    assert "1 created, 1 skipped" in output
+
+
+def test_run_monthly_returns_zero_when_no_negative_low_tides(monkeypatch, timezone, capsys):
+    monthly_config = main.MonthlyConfig(
+        noaa_station_id="9447659",
+        target_calendar_id="calendar-id",
+        google_oauth_access_token="access-token",
+        google_oauth_client_id="",
+        google_oauth_client_secret="",
+        google_oauth_refresh_token="",
+        google_oauth_token_url="https://oauth2.googleapis.com/token",
+    )
+    month_start = date(2026, 4, 1)
+    month_end = date(2026, 4, 30)
+
+    monkeypatch.setattr(main, "load_monthly_config", lambda: monthly_config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "build_month_bounds", lambda current_date: (month_start, month_end))
+    monkeypatch.setattr(
+        main.NOAA_TIDE_SERVICE,
+        "fetch_negative_low_tides",
+        lambda station_id, month_start, month_end, timezone: [],
+    )
+
+    assert main.run_monthly() == 0
+    output = capsys.readouterr().out
+    assert "No negative low tides found" in output

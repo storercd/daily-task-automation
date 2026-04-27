@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,19 +19,25 @@ from icalendar import Calendar
 from tzlocal import get_localzone
 
 from core.errors import SyncError
-from core.models import CalendarEvent, Config, TrelloCard
+from core.models import CalendarEvent, Config, LowTidePrediction, MonthlyConfig, TrelloCard
 from services.google_calendar import GoogleCalendarService
+from services.google_calendar_events import GoogleCalendarEventService
 from services.http_client import HttpClient
+from services.noaa_tides import NoaaTideService
 from services.trello import TrelloService
 
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
+LOW_TIDE_MARKER_PREFIX = "LOW-TIDE-KEY:"
 RUN_CALENDAR_SYNC = True
 RUN_DUE_CARD_TRIAGE = True
 MAX_REQUEST_ATTEMPTS = 3
 INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
+DEFAULT_NOAA_STATION_ID = "9447659"
+DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+MONTHLY_EVENT_DURATION = timedelta(hours=1)
 
 HTTP_CLIENT = HttpClient(
     max_attempts=MAX_REQUEST_ATTEMPTS,
@@ -39,6 +45,8 @@ HTTP_CLIENT = HttpClient(
     retryable_status_codes=RETRYABLE_STATUS_CODES,
 )
 GOOGLE_CALENDAR_SERVICE = GoogleCalendarService(HTTP_CLIENT)
+GOOGLE_CALENDAR_EVENT_SERVICE = GoogleCalendarEventService(HTTP_CLIENT, LOW_TIDE_MARKER_PREFIX)
+NOAA_TIDE_SERVICE = NoaaTideService(HTTP_CLIENT)
 TRELLO_SERVICE = TrelloService(HTTP_CLIENT, TRELLO_API_BASE_URL, UID_MARKER_PREFIX)
 
 
@@ -200,6 +208,57 @@ def load_config() -> Config:
         raise SyncError(f"Missing required environment variables: {', '.join(missing_values)}")
 
     return config
+
+
+def load_monthly_config() -> MonthlyConfig:
+    """Load and validate required environment variables for monthly tasks."""
+    load_dotenv()
+
+    config = MonthlyConfig(
+        noaa_station_id=os.getenv("NOAA_STATION_ID", DEFAULT_NOAA_STATION_ID).strip() or DEFAULT_NOAA_STATION_ID,
+        target_calendar_id=os.getenv("LOW_TIDE_CALENDAR_ID", "").strip(),
+        google_oauth_access_token=os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip(),
+        google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
+        google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+        google_oauth_refresh_token=os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip(),
+        google_oauth_token_url=(
+            os.getenv("GOOGLE_OAUTH_TOKEN_URL", DEFAULT_GOOGLE_OAUTH_TOKEN_URL).strip()
+            or DEFAULT_GOOGLE_OAUTH_TOKEN_URL
+        ),
+    )
+
+    missing_values: list[str] = []
+    if not config.target_calendar_id:
+        missing_values.append("LOW_TIDE_CALENDAR_ID")
+
+    requires_oauth_refresh = not config.google_oauth_access_token
+    if requires_oauth_refresh and not config.google_oauth_client_id:
+        missing_values.append("GOOGLE_OAUTH_CLIENT_ID")
+    if requires_oauth_refresh and not config.google_oauth_client_secret:
+        missing_values.append("GOOGLE_OAUTH_CLIENT_SECRET")
+    if requires_oauth_refresh and not config.google_oauth_refresh_token:
+        missing_values.append("GOOGLE_OAUTH_REFRESH_TOKEN")
+
+    if missing_values:
+        raise SyncError(f"Missing required monthly environment variables: {', '.join(missing_values)}")
+
+    return config
+
+
+def build_month_bounds(target_date: date) -> tuple[date, date]:
+    """Return first and last dates for target_date's month."""
+    month_start = target_date.replace(day=1)
+    if month_start.month == 12:
+        next_month_start = date(month_start.year + 1, 1, 1)
+    else:
+        next_month_start = date(month_start.year, month_start.month + 1, 1)
+    month_end = next_month_start - timedelta(days=1)
+    return month_start, month_end
+
+
+def build_low_tide_marker(station_id: str, prediction: LowTidePrediction) -> str:
+    """Build deduplication marker for one low-tide prediction."""
+    return f"{station_id}::{prediction.timestamp.isoformat()}"
 
 
 def get_local_timezone() -> ZoneInfo:
@@ -518,8 +577,12 @@ def run_daily() -> int:
     return 0
 
 
-def run_monthly() -> int:
+def run_monthly(target_month_date: date | None = None) -> int:
     """Run monthly automation tasks.
+
+    Args:
+        target_month_date: Optional date specifying which month to process.
+                          Defaults to the next month if None.
 
     Returns:
         Zero when all monthly tasks complete successfully.
@@ -527,25 +590,105 @@ def run_monthly() -> int:
     Raises:
         SyncError: If one or more monthly tasks fail.
     """
-    # Monthly tasks will be added here as needed.
-    print("No monthly tasks configured yet.")
+    config = load_monthly_config()
+    timezone = get_local_timezone()
+    if target_month_date is None:
+        current_date = datetime.now(timezone).date()
+        # Process the next month (e.g., process May during April)
+        _, current_month_end = build_month_bounds(current_date)
+        target_month_date = current_month_end + timedelta(days=1)
+    month_start, month_end = build_month_bounds(target_month_date)
+
+    predictions = NOAA_TIDE_SERVICE.fetch_negative_low_tides(
+        config.noaa_station_id,
+        month_start,
+        month_end,
+        timezone,
+    )
+    if not predictions:
+        print(
+            f"No negative low tides found for {month_start.strftime('%Y-%m')} "
+            f"at station {config.noaa_station_id}."
+        )
+        return 0
+
+    access_token = GOOGLE_CALENDAR_EVENT_SERVICE.get_access_token(config)
+    if not access_token:
+        raise SyncError("Could not obtain a Google OAuth access token for monthly tasks.")
+
+    window_start = datetime.combine(month_start, time.min, tzinfo=timezone)
+    window_end = datetime.combine(month_end + timedelta(days=1), time.min, tzinfo=timezone)
+    existing_markers = GOOGLE_CALENDAR_EVENT_SERVICE.load_existing_event_markers(
+        config,
+        access_token,
+        window_start,
+        window_end,
+    )
+
+    created_count = 0
+    skipped_count = 0
+    for prediction in predictions:
+        marker = build_low_tide_marker(config.noaa_station_id, prediction)
+        if marker in existing_markers:
+            skipped_count += 1
+            print(f"Skipped existing low-tide event: {prediction.timestamp.isoformat()}")
+            continue
+
+        summary = f"Low Tide: {prediction.height_feet:.2f}"
+        GOOGLE_CALENDAR_EVENT_SERVICE.create_event(
+            config,
+            access_token,
+            summary,
+            prediction.timestamp,
+            prediction.timestamp + MONTHLY_EVENT_DURATION,
+            marker,
+            str(timezone),
+        )
+        existing_markers.add(marker)
+        created_count += 1
+        print(f"Created low-tide event: {summary} at {prediction.timestamp.isoformat()}")
+
+    print(
+        f"Monthly low-tide task processed {len(predictions)} prediction(s) for "
+        f"{month_start.strftime('%Y-%m')}: {created_count} created, {skipped_count} skipped."
+    )
     return 0
 
 
 def main() -> int:
     """Parse CLI arguments and dispatch to the appropriate routine.
 
+    Usage:
+        python main.py [daily|monthly] [optional-date-for-monthly]
+
+    For monthly, optional-date format: YYYY-MM or YYYY-MM-DD (defaults to current month).
+
     Returns:
         Exit code from the selected routine.
     """
     routine = "daily"
+    target_date = None
+
     if len(sys.argv) > 1:
         routine = sys.argv[1].lower()
 
     if routine == "daily":
         return run_daily()
     elif routine == "monthly":
-        return run_monthly()
+        if len(sys.argv) > 2:
+            date_str = sys.argv[2]
+            try:
+                if len(date_str) == 7:  # YYYY-MM format
+                    year, month = date_str.split("-")
+                    target_date = date(int(year), int(month), 1)
+                elif len(date_str) == 10:  # YYYY-MM-DD format
+                    target_date = date.fromisoformat(date_str)
+                else:
+                    raise ValueError(f"Invalid date format: {date_str}. Use YYYY-MM or YYYY-MM-DD.")
+            except (ValueError, AttributeError) as e:
+                print(f"Error parsing date: {e}", file=sys.stderr)
+                raise SystemExit(1)
+        return run_monthly(target_date)
     else:
         print(f"Unknown routine: {routine}. Use 'daily' or 'monthly'.", file=sys.stderr)
         raise SystemExit(1)
