@@ -7,6 +7,8 @@ import pytest
 import requests
 
 import main
+from services import google_calendar as google_calendar_module
+from services import http_client as http_client_module
 
 
 class FakeComponent:
@@ -85,7 +87,11 @@ def test_parse_events_for_today_returns_all_day_and_timed_events(monkeypatch, ti
         FakeComponent(today, uid="", summary="Missing UID"),
         FakeComponent(today, uid="missing-summary", summary=""),
     ]
-    monkeypatch.setattr(main.recurring_ical_events, "of", lambda calendar: FakeRecurringCalendar(components))
+    monkeypatch.setattr(
+        google_calendar_module.recurring_ical_events,
+        "of",
+        lambda calendar: FakeRecurringCalendar(components),
+    )
 
     events, warnings = main.parse_events_for_today(object(), today, timezone)
 
@@ -99,7 +105,11 @@ def test_parse_events_for_today_returns_all_day_and_timed_events(monkeypatch, ti
 
 
 def test_fetch_calendar_raises_helpful_message_for_google_404(monkeypatch):
-    monkeypatch.setattr(main, "request_with_backoff", lambda method, url, **kwargs: FakeResponse(status_code=404))
+    monkeypatch.setattr(
+        main.HTTP_CLIENT,
+        "request_with_backoff",
+        lambda method, url, **kwargs: FakeResponse(status_code=404),
+    )
 
     with pytest.raises(main.SyncError, match="Secret address in iCal format"):
         main.fetch_calendar("https://calendar.google.com/calendar/ical/public/basic.ics")
@@ -115,8 +125,8 @@ def test_request_with_backoff_retries_connection_errors(monkeypatch):
             raise requests.ConnectionError("reset")
         return FakeResponse(status_code=200)
 
-    monkeypatch.setattr(main.requests, "request", fake_request)
-    monkeypatch.setattr(main.time_module, "sleep", sleeps.append)
+    monkeypatch.setattr(http_client_module.requests, "request", fake_request)
+    monkeypatch.setattr(http_client_module.time_module, "sleep", sleeps.append)
 
     response = main.request_with_backoff("GET", "https://example.com")
 
@@ -129,8 +139,12 @@ def test_request_with_backoff_retries_retryable_status_codes(monkeypatch):
     responses = [FakeResponse(status_code=503), FakeResponse(status_code=200)]
     sleeps = []
 
-    monkeypatch.setattr(main.requests, "request", lambda method, url, timeout, **kwargs: responses.pop(0))
-    monkeypatch.setattr(main.time_module, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        http_client_module.requests,
+        "request",
+        lambda method, url, timeout, **kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr(http_client_module.time_module, "sleep", sleeps.append)
 
     response = main.request_with_backoff("GET", "https://example.com")
 
@@ -148,9 +162,9 @@ def test_create_card_retries_transient_failure_then_succeeds(monkeypatch, config
             raise requests.ConnectionError("reset")
         return {"id": "card-1"}
 
-    monkeypatch.setattr(main, "trello_request", fake_trello_request)
-    monkeypatch.setattr(main, "card_exists_for_event", lambda config, list_id, event_key: False)
-    monkeypatch.setattr(main.time_module, "sleep", sleeps.append)
+    monkeypatch.setattr(main.TRELLO_SERVICE, "request", fake_trello_request)
+    monkeypatch.setattr(main.TRELLO_SERVICE, "card_exists_for_event", lambda config, list_id, event_key: False)
+    monkeypatch.setattr(http_client_module.time_module, "sleep", sleeps.append)
 
     created_new_card = main.create_card(config, "list-1", sample_event)
 
@@ -163,8 +177,8 @@ def test_create_card_recovers_when_card_exists_after_failure(monkeypatch, config
     def fake_trello_request(method, path, api_key, api_token, allow_retries=True, **kwargs):
         raise requests.ConnectionError("reset")
 
-    monkeypatch.setattr(main, "trello_request", fake_trello_request)
-    monkeypatch.setattr(main, "card_exists_for_event", lambda config, list_id, event_key: True)
+    monkeypatch.setattr(main.TRELLO_SERVICE, "request", fake_trello_request)
+    monkeypatch.setattr(main.TRELLO_SERVICE, "card_exists_for_event", lambda config, list_id, event_key: True)
 
     created_new_card = main.create_card(config, "list-1", sample_event)
 
