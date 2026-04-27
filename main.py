@@ -6,6 +6,7 @@ import sys
 import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import recurring_ical_events
@@ -21,7 +22,7 @@ RUN_DUE_CARD_TRIAGE = True
 MAX_REQUEST_ATTEMPTS = 3
 INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-DATE_STATUS_FILE_PATH = os.path.join("logs", "processed_dates.json")
+DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
 
 
 @dataclass
@@ -56,16 +57,16 @@ class SyncError(Exception):
 
 
 def ensure_parent_directory(file_path: str) -> None:
-    parent_directory = os.path.dirname(file_path)
-    if parent_directory:
-        os.makedirs(parent_directory, exist_ok=True)
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_processed_date_statuses(file_path: str) -> dict[str, dict[str, str | int]]:
-    if not os.path.exists(file_path):
+    path = Path(file_path)
+    if not path.exists():
         return {}
 
-    with open(file_path, "r", encoding="utf-8") as file_handle:
+    with path.open("r", encoding="utf-8") as file_handle:
         try:
             loaded_data = json.load(file_handle)
         except json.JSONDecodeError as error:
@@ -85,7 +86,7 @@ def load_processed_date_statuses(file_path: str) -> dict[str, dict[str, str | in
 
 def save_processed_date_statuses(file_path: str, statuses: dict[str, dict[str, str | int]]) -> None:
     ensure_parent_directory(file_path)
-    with open(file_path, "w", encoding="utf-8") as file_handle:
+    with Path(file_path).open("w", encoding="utf-8") as file_handle:
         json.dump(statuses, file_handle, indent=2, sort_keys=True)
         file_handle.write("\n")
 
@@ -587,7 +588,7 @@ def run() -> int:
     board_id = find_board_id(config)
     triage_list_id = find_list_id(config, board_id)
 
-    status_file_exists = os.path.exists(DATE_STATUS_FILE_PATH)
+    status_file_exists = Path(DATE_STATUS_FILE_PATH).exists()
     processed_date_statuses = load_processed_date_statuses(DATE_STATUS_FILE_PATH)
 
     if not status_file_exists:

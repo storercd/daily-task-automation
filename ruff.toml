@@ -14,7 +14,7 @@ select = [
     "I",       # isort
     "C90",     # McCabe complexity
     "PLC0415", # import outside top-level
-#    "PTH",     # use pathlib over os/pathlib legacy patterns
+    "PTH",     # use pathlib over os/pathlib legacy patterns
 ]
 #extend-ignore = ["PTH116", "PTH118", "PTH122", "PTH207", "PTH208"]
 ignore = [

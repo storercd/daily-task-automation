@@ -257,7 +257,7 @@ def test_run_returns_zero_when_routines_enabled(monkeypatch, config, timezone):
         "save_processed_date_statuses",
         lambda file_path, statuses: status_updates.append(dict(statuses)),
     )
-    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
+    monkeypatch.setattr(main.Path, "exists", lambda _self: False)
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, today, list_id: None)
@@ -328,7 +328,7 @@ def test_run_creates_date_status_file_and_processes_today_only_when_missing(monk
         saved_snapshots.append(dict(statuses))
 
     monkeypatch.setattr(main, "save_processed_date_statuses", fake_save)
-    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
+    monkeypatch.setattr(main.Path, "exists", lambda _self: False)
 
     assert main.run() == 0
     assert processed_days == [date(2026, 4, 27)]
@@ -350,7 +350,7 @@ def test_run_backfills_missing_dates_from_status_file(monkeypatch, config, timez
         "save_processed_date_statuses",
         lambda file_path, statuses: status_saves.append(dict(statuses)),
     )
-    monkeypatch.setattr(main.os.path, "exists", lambda file_path: True)
+    monkeypatch.setattr(main.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
         main,
         "run_calendar_sync",
@@ -376,7 +376,7 @@ def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
         "save_processed_date_statuses",
         lambda file_path, statuses: saved_statuses.append(dict(statuses)),
     )
-    monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
+    monkeypatch.setattr(main.Path, "exists", lambda _self: False)
     monkeypatch.setattr(
         main,
         "run_calendar_sync",
