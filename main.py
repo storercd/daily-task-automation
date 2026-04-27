@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time as time_module
-import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -13,7 +13,6 @@ import requests
 from dotenv import load_dotenv
 from icalendar import Calendar
 from tzlocal import get_localzone
-
 
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
@@ -200,11 +199,20 @@ def log_retry_attempt(message: str, attempt_number: int) -> None:
     time_module.sleep(delay_seconds)
 
 
-def request_with_backoff(method: str, url: str, retry_enabled: bool = True, **kwargs) -> requests.Response:
+def request_with_backoff(
+    method: str,
+    url: str,
+    retry_enabled: bool = True,
+    **kwargs,
+) -> requests.Response:
     for attempt_number in range(1, MAX_REQUEST_ATTEMPTS + 1):
         try:
             response = requests.request(method, url, timeout=30, **kwargs)
-            if retry_enabled and response.status_code in RETRYABLE_STATUS_CODES and attempt_number < MAX_REQUEST_ATTEMPTS:
+            if (
+                retry_enabled
+                and response.status_code in RETRYABLE_STATUS_CODES
+                and attempt_number < MAX_REQUEST_ATTEMPTS
+            ):
                 log_retry_attempt(
                     f"Received retryable HTTP status {response.status_code} for {method} {url}",
                     attempt_number,
@@ -223,7 +231,9 @@ def fetch_calendar(ical_url: str) -> Calendar:
     response = request_with_backoff("GET", ical_url)
     if response.status_code == 404 and "calendar.google.com" in ical_url:
         raise SyncError(
-            "Google Calendar returned 404 for the iCal URL. Use the calendar's 'Secret address in iCal format' from Settings and sharing -> Integrate calendar."
+            "Google Calendar returned 404 for the iCal URL. "
+            "Use the calendar's 'Secret address in iCal format' from "
+            "Settings and sharing -> Integrate calendar."
         )
     response.raise_for_status()
     return Calendar.from_ical(response.text)
@@ -253,7 +263,11 @@ def build_event_key(uid: str, occurrence_value: date | datetime, timezone: ZoneI
     return f"{uid}::{format_occurrence_value(occurrence_value, timezone)}"
 
 
-def parse_events_for_today(calendar: Calendar, today: date, timezone: ZoneInfo) -> tuple[list[CalendarEvent], list[str]]:
+def parse_events_for_today(
+    calendar: Calendar,
+    today: date,
+    timezone: ZoneInfo,
+) -> tuple[list[CalendarEvent], list[str]]:
     matching_events: list[CalendarEvent] = []
     warnings: list[str] = []
     start_of_day = datetime.combine(today, time.min, tzinfo=timezone)
@@ -261,7 +275,11 @@ def parse_events_for_today(calendar: Calendar, today: date, timezone: ZoneInfo) 
 
     for component in recurring_ical_events.of(calendar).between(start_of_day, end_of_day):
         start_value = component.decoded("DTSTART")
-        occurrence_day = as_local_datetime(start_value, timezone).date() if isinstance(start_value, datetime) else start_value
+        occurrence_day = (
+            as_local_datetime(start_value, timezone).date()
+            if isinstance(start_value, datetime)
+            else start_value
+        )
         if occurrence_day != today:
             continue
 
@@ -294,10 +312,23 @@ def parse_events_for_today(calendar: Calendar, today: date, timezone: ZoneInfo) 
     return matching_events, warnings
 
 
-def trello_request(method: str, path: str, api_key: str, api_token: str, allow_retries: bool = True, **kwargs):
+def trello_request(
+    method: str,
+    path: str,
+    api_key: str,
+    api_token: str,
+    allow_retries: bool = True,
+    **kwargs,
+):
     params = kwargs.pop("params", {})
     params.update({"key": api_key, "token": api_token})
-    response = request_with_backoff(method, f"{TRELLO_API_BASE_URL}{path}", retry_enabled=allow_retries, params=params, **kwargs)
+    response = request_with_backoff(
+        method,
+        f"{TRELLO_API_BASE_URL}{path}",
+        retry_enabled=allow_retries,
+        params=params,
+        **kwargs,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -309,7 +340,13 @@ def parse_trello_datetime(value: str | None, timezone: ZoneInfo) -> datetime | N
 
 
 def find_board_id(config: Config) -> str:
-    boards = trello_request("GET", "/members/me/boards", config.trello_api_key, config.trello_api_token, params={"fields": "name"})
+    boards = trello_request(
+        "GET",
+        "/members/me/boards",
+        config.trello_api_key,
+        config.trello_api_token,
+        params={"fields": "name"},
+    )
     for board in boards:
         if board["name"] == config.trello_board_name:
             return board["id"]
@@ -317,7 +354,13 @@ def find_board_id(config: Config) -> str:
 
 
 def find_list_id(config: Config, board_id: str) -> str:
-    lists = trello_request("GET", f"/boards/{board_id}/lists", config.trello_api_key, config.trello_api_token, params={"fields": "name"})
+    lists = trello_request(
+        "GET",
+        f"/boards/{board_id}/lists",
+        config.trello_api_key,
+        config.trello_api_token,
+        params={"fields": "name"},
+    )
     for trello_list in lists:
         if trello_list["name"] == config.trello_list_name:
             return trello_list["id"]

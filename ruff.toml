@@ -1,0 +1,36 @@
+line-length = 120
+
+# Set output format to concise (one line per error)
+output-format = "concise"
+
+[lint]
+preview = true # whitespace errors are still in preview
+# Select rules similar to flake8's default set
+select = [
+    "E",       # pycodestyle errors
+    "W",       # pycodestyle warnings
+    "F",       # pyflakes
+#    "D",       # pydocstyle
+    "I",       # isort
+    "C90",     # McCabe complexity
+    "PLC0415", # import outside top-level
+#    "PTH",     # use pathlib over os/pathlib legacy patterns
+]
+#extend-ignore = ["PTH116", "PTH118", "PTH122", "PTH207", "PTH208"]
+ignore = [
+    # "D401",    # First line of docstring should be in imperative mood
+    # "D203",    # 1 blank line required before class docstring
+    # "D213",    # Multi-line docstring summary should start at the second line
+]
+
+[lint.pydocstyle]
+#convention = "google"
+
+[lint.per-file-ignores]
+#"tests/**" = ["D", "PLC0415"] # Ignore docstring and import rules in test files
+
+# TODO: Consider expanding the rule set in the future
+# Additional useful rules: ["B", "C4", "SIM", "UP"]
+
+[lint.mccabe]
+max-complexity = 10

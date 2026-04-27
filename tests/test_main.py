@@ -180,11 +180,31 @@ def test_run_calendar_sync_tracks_created_skipped_and_migrated(monkeypatch, conf
     migrated_event = main.CalendarEvent("legacy-uid", "legacy-uid::2026-03-14", "Migrated Task", "", True)
 
     monkeypatch.setattr(main, "fetch_calendar", lambda ical_url: object())
-    monkeypatch.setattr(main, "parse_events_for_today", lambda calendar, current_day, zone: ([created_event, skipped_event, migrated_event], ["warn-1"]))
-    monkeypatch.setattr(main, "load_existing_event_markers", lambda config, list_id: ({skipped_event.event_key}, {migrated_event.uid: ["card-123"]}))
+    monkeypatch.setattr(
+        main,
+        "parse_events_for_today",
+        lambda calendar, current_day, zone: (
+            [created_event, skipped_event, migrated_event],
+            ["warn-1"],
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "load_existing_event_markers",
+        lambda config, list_id: (
+            {skipped_event.event_key},
+            {migrated_event.uid: ["card-123"]},
+        ),
+    )
     monkeypatch.setattr(main, "create_card", lambda config, list_id, event: True)
     migrated = []
-    monkeypatch.setattr(main, "migrate_legacy_card_marker", lambda config, card_id, legacy_uid, event: migrated.append((card_id, legacy_uid, event.summary)))
+    monkeypatch.setattr(
+        main,
+        "migrate_legacy_card_marker",
+        lambda config, card_id, legacy_uid, event: migrated.append(
+            (card_id, legacy_uid, event.summary)
+        ),
+    )
 
     main.run_calendar_sync(config, timezone, today, "triage-list")
 
@@ -201,7 +221,13 @@ def test_run_due_card_triage_moves_only_due_incomplete_cards(monkeypatch, config
     today = date(2026, 3, 14)
     cards = [
         main.TrelloCard("move-me", "Move Me", datetime(2026, 3, 13, 12, 0, tzinfo=timezone), False, "other-list"),
-        main.TrelloCard("already-there", "Already There", datetime(2026, 3, 14, 8, 0, tzinfo=timezone), False, "triage-list"),
+        main.TrelloCard(
+            "already-there",
+            "Already There",
+            datetime(2026, 3, 14, 8, 0, tzinfo=timezone),
+            False,
+            "triage-list",
+        ),
         main.TrelloCard("future", "Future", datetime(2026, 3, 15, 9, 0, tzinfo=timezone), False, "other-list"),
         main.TrelloCard("done", "Done", datetime(2026, 3, 14, 9, 0, tzinfo=timezone), True, "other-list"),
         main.TrelloCard("undated", "Undated", None, False, "other-list"),
@@ -226,7 +252,11 @@ def test_run_returns_zero_when_routines_enabled(monkeypatch, config, timezone):
     monkeypatch.setattr(main, "load_config", lambda: config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
     monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: {})
-    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: status_updates.append(dict(statuses)))
+    monkeypatch.setattr(
+        main,
+        "save_processed_date_statuses",
+        lambda file_path, statuses: status_updates.append(dict(statuses)),
+    )
     monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
@@ -287,7 +317,11 @@ def test_run_creates_date_status_file_and_processes_today_only_when_missing(monk
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
-    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: processed_days.append(day))
+    monkeypatch.setattr(
+        main,
+        "run_calendar_sync",
+        lambda config, timezone, day, list_id: processed_days.append(day),
+    )
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
 
     def fake_save(file_path, statuses):
@@ -311,9 +345,17 @@ def test_run_backfills_missing_dates_from_status_file(monkeypatch, config, timez
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: dict(stored_statuses))
-    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: status_saves.append(dict(statuses)))
+    monkeypatch.setattr(
+        main,
+        "save_processed_date_statuses",
+        lambda file_path, statuses: status_saves.append(dict(statuses)),
+    )
     monkeypatch.setattr(main.os.path, "exists", lambda file_path: True)
-    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: processed_days.append(day))
+    monkeypatch.setattr(
+        main,
+        "run_calendar_sync",
+        lambda config, timezone, day, list_id: processed_days.append(day),
+    )
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
 
     assert main.run() == 0
@@ -329,9 +371,19 @@ def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: {})
-    monkeypatch.setattr(main, "save_processed_date_statuses", lambda file_path, statuses: saved_statuses.append(dict(statuses)))
+    monkeypatch.setattr(
+        main,
+        "save_processed_date_statuses",
+        lambda file_path, statuses: saved_statuses.append(dict(statuses)),
+    )
     monkeypatch.setattr(main.os.path, "exists", lambda file_path: False)
-    monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, day, list_id: (_ for _ in ()).throw(main.SyncError("boom")))
+    monkeypatch.setattr(
+        main,
+        "run_calendar_sync",
+        lambda config, timezone, day, list_id: (_ for _ in ()).throw(
+            main.SyncError("boom")
+        ),
+    )
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
 
     with pytest.raises(main.SyncError, match="Daily automation failed"):
