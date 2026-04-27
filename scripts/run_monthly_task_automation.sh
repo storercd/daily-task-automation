@@ -12,4 +12,4 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 cd "$REPO_DIR"
-exec "$PYTHON_BIN" "$SCRIPT_PATH" daily
+exec "$PYTHON_BIN" "$SCRIPT_PATH" monthly

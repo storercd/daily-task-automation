@@ -930,7 +930,7 @@ def run_due_card_triage(
     )
 
 
-def run() -> int:
+def run_daily() -> int:
     """Run daily automation and persist per-date outcomes.
 
     Returns:
@@ -998,9 +998,42 @@ def run() -> int:
     return 0
 
 
+def run_monthly() -> int:
+    """Run monthly automation tasks.
+
+    Returns:
+        Zero when all monthly tasks complete successfully.
+
+    Raises:
+        SyncError: If one or more monthly tasks fail.
+    """
+    # Monthly tasks will be added here as needed.
+    print("No monthly tasks configured yet.")
+    return 0
+
+
+def main() -> int:
+    """Parse CLI arguments and dispatch to the appropriate routine.
+
+    Returns:
+        Exit code from the selected routine.
+    """
+    routine = "daily"
+    if len(sys.argv) > 1:
+        routine = sys.argv[1].lower()
+
+    if routine == "daily":
+        return run_daily()
+    elif routine == "monthly":
+        return run_monthly()
+    else:
+        print(f"Unknown routine: {routine}. Use 'daily' or 'monthly'.", file=sys.stderr)
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(run())
+        raise SystemExit(main())
     except requests.HTTPError as error:
         response = error.response
         status = response.status_code if response is not None else "unknown"

@@ -263,7 +263,7 @@ def test_run_returns_zero_when_routines_enabled(monkeypatch, config, timezone):
     monkeypatch.setattr(main, "run_calendar_sync", lambda config, timezone, today, list_id: None)
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, today, board_id, list_id: None)
 
-    assert main.run() == 0
+    assert main.run_daily() == 0
     assert status_updates
 
 
@@ -330,7 +330,7 @@ def test_run_creates_date_status_file_and_processes_today_only_when_missing(monk
     monkeypatch.setattr(main, "save_processed_date_statuses", fake_save)
     monkeypatch.setattr(main.Path, "exists", lambda _self: False)
 
-    assert main.run() == 0
+    assert main.run_daily() == 0
     assert processed_days == [date(2026, 4, 27)]
     assert len(saved_snapshots) >= 2
 
@@ -358,7 +358,7 @@ def test_run_backfills_missing_dates_from_status_file(monkeypatch, config, timez
     )
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
 
-    assert main.run() == 0
+    assert main.run_daily() == 0
     assert processed_days == [date(2026, 4, 26), date(2026, 4, 27)]
     assert status_saves
 
@@ -387,7 +387,7 @@ def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
     monkeypatch.setattr(main, "run_due_card_triage", lambda config, timezone, day, board_id, list_id: None)
 
     with pytest.raises(main.SyncError, match="Daily automation failed"):
-        main.run()
+        main.run_daily()
 
     assert saved_statuses
     latest_statuses = saved_statuses[-1]

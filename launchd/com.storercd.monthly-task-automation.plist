@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.storercd.monthly-task-automation</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/christopherstorer/github/personal/daily-task-automation/scripts/run_monthly_task_automation.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.monthly.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.monthly.stderr.log</string>
+</dict>
+</plist>
