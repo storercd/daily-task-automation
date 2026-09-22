@@ -1,11 +1,12 @@
 # Daily Task Automation
 
-This script runs daily Trello routines, a monthly low-tide routine, and a sheet-watch routine:
+This script runs daily Trello routines, a monthly low-tide routine, and two watch routines:
 
 - It reads all events for the current local day from a Google Calendar iCal feed and creates Trello cards in the `Triage` list.
 - It moves Trello cards with a due date of today or earlier into the `Triage` list.
 - It fetches NOAA monthly high/low tide predictions for Everett, WA (station `9447659`), finds low tides below `0.00` feet, and creates one-hour Google Calendar events for those times.
 - It checks configured, publicly-readable Google Sheets for row/cell changes since the last check, and creates a Trello alert card describing what changed.
+- It checks configured plain web pages for visible-text changes since the last check, and creates a Trello alert card describing what changed.
 
 Behavior:
 - All-day events are imported.
@@ -15,7 +16,7 @@ Behavior:
 - Each run records per-date status in `logs/processed_dates.json`.
 - If previous dates were missed or failed, the next run backfills those dates automatically before completing today.
 - On first run (when the status file does not exist), the status file is created and only today is processed.
-- If any routine (`daily`, `monthly`, or `watch`) fails, a Trello alert card identifying the failing job is created (deduplicated per job per day) so it can be investigated.
+- If any routine (`daily`, `monthly`, `watch`, or `watch-web`) fails, a Trello alert card identifying the failing job is created (deduplicated per job per day) so it can be investigated.
 
 ## Setup
 
@@ -64,6 +65,22 @@ Sheet-watch routine configuration (`.env`):
 - On the first run for a source, only a baseline snapshot is recorded to `state/sheet_watchers/<name>.csv`; no alert is sent.
 - Subsequent runs diff the new CSV against the stored snapshot (row-level and cell-level) and create a Trello card in `TRELLO_LIST_NAME` describing the change, deduplicated by a content-hash marker.
 - Alerting is decoupled from detection (see `core/notifiers.py`), so a non-Trello notifier could be added later without changing the fetch/diff logic.
+
+Run web-page-watch routine explicitly:
+
+```bash
+source .venv/bin/activate
+python main.py watch-web
+```
+
+Web-page-watch routine configuration (`.env`):
+
+- Uses the same Trello settings as the sheet-watch routine.
+- `WEB_PAGE_WATCHERS`: a JSON array of watched pages, e.g. `[{"name": "Competition Schedule", "url": "https://..."}]`.
+- At least one of `SHEET_WATCHERS` or `WEB_PAGE_WATCHERS` must be configured.
+- The page's HTML is reduced to visible text (script/style content stripped), then diffed line-by-line, reusing the same row-diff logic as the sheet watcher (each line is treated as a one-column row).
+- Snapshots are stored in `state/web_page_watchers/<name>.txt`.
+- To avoid needlessly re-fetching an unchanged page, requests include `If-None-Match`/`If-Modified-Since` based on the previously observed `ETag`/`Last-Modified` response headers (stored in a `.meta.json` sidecar file). A server that supports conditional requests responds `304 Not Modified` instead of resending the page, so this routine can run more frequently than the sheet-watch routine without generating extra load once nothing has changed. This is why `watch-web` has its own, more frequent LaunchAgent schedule (see below) separate from `watch`.
 
 ## Test
 
@@ -122,6 +139,23 @@ launchctl enable gui/"$(id -u)"/com.storercd.watch-task-automation
 
 To run it more often later (e.g. hourly), switch its `StartCalendarInterval` for a
 `StartInterval` (seconds) in the plist, then repeat the `bootout`/`bootstrap` commands above.
+
+The web-page-watch routine also has its own LaunchAgent. It runs every 15 minutes
+(`StartInterval` of 900 seconds) since conditional GETs make frequent, unchanged checks
+cheap for the origin server:
+
+Files:
+- `scripts/run_watch_web_task_automation.sh`
+- `launchd/com.storercd.watch-web-task-automation.plist`
+
+```bash
+mkdir -p state ~/Library/LaunchAgents
+chmod +x scripts/run_watch_web_task_automation.sh
+cp launchd/com.storercd.watch-web-task-automation.plist ~/Library/LaunchAgents/
+launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-web-task-automation.plist 2>/dev/null || true
+launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-web-task-automation.plist
+launchctl enable gui/"$(id -u)"/com.storercd.watch-web-task-automation
+```
 
 ## Notes
 

@@ -70,19 +70,28 @@ class SheetSource:
 
 
 @dataclass
+class WebPageSource:
+    """Identify one plain web page to watch for visible-text changes."""
+
+    name: str
+    url: str
+
+
+@dataclass
 class WatchConfig:
-    """Store required runtime settings for the sheet-watch routine."""
+    """Store required runtime settings for the sheet-watch and web-page-watch routines."""
 
     trello_api_key: str
     trello_api_token: str
     trello_board_name: str
     trello_list_name: str
-    sources: list[SheetSource]
+    sheet_sources: list[SheetSource]
+    web_page_sources: list[WebPageSource]
 
 
 @dataclass
 class RowChange:
-    """Describe one added, removed, or modified row detected between two CSV snapshots."""
+    """Describe one added, removed, or modified row detected between two snapshots."""
 
     kind: str
     row_index: int

@@ -29,8 +29,10 @@ from core.models import (
     SheetSource,
     TrelloCard,
     WatchConfig,
+    WebPageSource,
 )
 from core.notifiers import ChangeNotifier
+from services.content_diff import ContentDiffService
 from services.google_calendar import GoogleCalendarService
 from services.google_calendar_events import GoogleCalendarEventService
 from services.http_client import HttpClient
@@ -38,6 +40,7 @@ from services.noaa_tides import NoaaTideService
 from services.sheet_watcher import SheetWatcherService
 from services.trello import TrelloService
 from services.trello_change_notifier import TrelloChangeNotifier
+from services.web_page_watcher import WebPageWatcherService
 
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
@@ -50,6 +53,7 @@ INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
 SHEET_WATCH_SNAPSHOT_DIR = Path("state") / "sheet_watchers"
+WEB_PAGE_WATCH_SNAPSHOT_DIR = Path("state") / "web_page_watchers"
 DEFAULT_NOAA_STATION_ID = "9447659"
 DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 MONTHLY_EVENT_DURATION = timedelta(hours=1)
@@ -64,6 +68,8 @@ GOOGLE_CALENDAR_EVENT_SERVICE = GoogleCalendarEventService(HTTP_CLIENT, LOW_TIDE
 NOAA_TIDE_SERVICE = NoaaTideService(HTTP_CLIENT)
 TRELLO_SERVICE = TrelloService(HTTP_CLIENT, TRELLO_API_BASE_URL, UID_MARKER_PREFIX)
 SHEET_WATCHER_SERVICE = SheetWatcherService(HTTP_CLIENT)
+WEB_PAGE_WATCHER_SERVICE = WebPageWatcherService(HTTP_CLIENT)
+CONTENT_DIFF_SERVICE = ContentDiffService()
 
 
 def ensure_parent_directory(file_path: str) -> None:
@@ -273,6 +279,9 @@ def parse_sheet_sources(sources_json: str) -> list[SheetSource]:
     Raises:
         SyncError: If the value is not valid JSON or not a JSON array of objects.
     """
+    if not sources_json:
+        return []
+
     try:
         raw_sources = json.loads(sources_json)
     except json.JSONDecodeError as error:
@@ -290,15 +299,45 @@ def parse_sheet_sources(sources_json: str) -> list[SheetSource]:
         raise SyncError("Each SHEET_WATCHERS entry requires 'name' and 'spreadsheet_id'") from error
 
 
+def parse_web_page_sources(sources_json: str) -> list[WebPageSource]:
+    """Parse the WEB_PAGE_WATCHERS environment variable into WebPageSource entries.
+
+    Args:
+        sources_json: JSON array string, e.g. '[{"name": "X", "url": "https://..."}]'.
+
+    Returns:
+        Parsed list of WebPageSource entries.
+
+    Raises:
+        SyncError: If the value is not valid JSON or not a JSON array of objects.
+    """
+    if not sources_json:
+        return []
+
+    try:
+        raw_sources = json.loads(sources_json)
+    except json.JSONDecodeError as error:
+        raise SyncError("WEB_PAGE_WATCHERS must be valid JSON") from error
+
+    if not isinstance(raw_sources, list):
+        raise SyncError("WEB_PAGE_WATCHERS must be a JSON array")
+
+    try:
+        return [WebPageSource(name=entry["name"], url=entry["url"]) for entry in raw_sources]
+    except (KeyError, TypeError) as error:
+        raise SyncError("Each WEB_PAGE_WATCHERS entry requires 'name' and 'url'") from error
+
+
 def load_watch_config() -> WatchConfig:
-    """Load and validate required environment variables for the sheet-watch routine."""
+    """Load and validate required environment variables for the watch routines."""
     load_dotenv()
 
     trello_api_key = os.getenv("TRELLO_API_KEY", "").strip()
     trello_api_token = os.getenv("TRELLO_API_TOKEN", "").strip()
     trello_board_name = os.getenv("TRELLO_BOARD_NAME", "").strip()
     trello_list_name = os.getenv("TRELLO_LIST_NAME", "").strip()
-    sources_raw = os.getenv("SHEET_WATCHERS", "").strip()
+    sheet_sources = parse_sheet_sources(os.getenv("SHEET_WATCHERS", "").strip())
+    web_page_sources = parse_web_page_sources(os.getenv("WEB_PAGE_WATCHERS", "").strip())
 
     missing_values = [
         name
@@ -307,19 +346,21 @@ def load_watch_config() -> WatchConfig:
             ("TRELLO_API_TOKEN", trello_api_token),
             ("TRELLO_BOARD_NAME", trello_board_name),
             ("TRELLO_LIST_NAME", trello_list_name),
-            ("SHEET_WATCHERS", sources_raw),
         )
         if not value
     ]
     if missing_values:
         raise SyncError(f"Missing required watch environment variables: {', '.join(missing_values)}")
+    if not sheet_sources and not web_page_sources:
+        raise SyncError("At least one of SHEET_WATCHERS or WEB_PAGE_WATCHERS must be configured")
 
     return WatchConfig(
         trello_api_key=trello_api_key,
         trello_api_token=trello_api_token,
         trello_board_name=trello_board_name,
         trello_list_name=trello_list_name,
-        sources=parse_sheet_sources(sources_raw),
+        sheet_sources=sheet_sources,
+        web_page_sources=web_page_sources,
     )
 
 
@@ -372,6 +413,67 @@ def save_sheet_snapshot(snapshot_path: Path, csv_text: str) -> None:
 def diff_sheet_rows(old_rows: list[list[str]], new_rows: list[list[str]]) -> list[RowChange]:
     """Compute row-level and cell-level changes between two CSV row sets."""
     return SHEET_WATCHER_SERVICE.diff_rows(old_rows, new_rows)
+
+
+def fetch_web_page_text(
+    source: WebPageSource,
+    etag: str | None,
+    last_modified: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Fetch a web page's visible text, or None when a conditional GET reports no change."""
+    return WEB_PAGE_WATCHER_SERVICE.fetch_page_text(source, etag, last_modified)
+
+
+def parse_web_page_lines(text: str) -> list[list[str]]:
+    """Represent each line of page text as a single-column row for diffing."""
+    return WEB_PAGE_WATCHER_SERVICE.parse_text_lines(text)
+
+
+def hash_web_page_content(text: str) -> str:
+    """Compute a stable content hash used for alert deduplication."""
+    return CONTENT_DIFF_SERVICE.hash_content(text)
+
+
+def web_page_snapshot_path(source_name: str) -> Path:
+    """Build the snapshot file path for one watched web page source."""
+    return CONTENT_DIFF_SERVICE.snapshot_path(WEB_PAGE_WATCH_SNAPSHOT_DIR, source_name, extension="txt")
+
+
+def load_web_page_snapshot(snapshot_path: Path) -> str | None:
+    """Load the previously stored snapshot's raw text, if any."""
+    return CONTENT_DIFF_SERVICE.load_snapshot(snapshot_path)
+
+
+def save_web_page_snapshot(snapshot_path: Path, text: str) -> None:
+    """Persist the current page text as the new snapshot."""
+    CONTENT_DIFF_SERVICE.save_snapshot(snapshot_path, text)
+
+
+def diff_web_page_lines(old_rows: list[list[str]], new_rows: list[list[str]]) -> list[RowChange]:
+    """Compute line-level changes between two page text snapshots."""
+    return CONTENT_DIFF_SERVICE.diff_rows(old_rows, new_rows)
+
+
+def web_page_metadata_path(source_name: str) -> Path:
+    """Build the conditional-GET metadata sidecar path for one watched web page source."""
+    return CONTENT_DIFF_SERVICE.snapshot_path(WEB_PAGE_WATCH_SNAPSHOT_DIR, source_name, extension="meta.json")
+
+
+def load_web_page_metadata(metadata_path: Path) -> dict[str, str]:
+    """Load previously observed ETag/Last-Modified headers for a web page source."""
+    if not metadata_path.exists():
+        return {}
+    try:
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_web_page_metadata(metadata_path: Path, etag: str | None, last_modified: str | None) -> None:
+    """Persist ETag/Last-Modified headers so future checks can use conditional GETs."""
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {"etag": etag or "", "last_modified": last_modified or ""}
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
 
 def get_local_timezone() -> ZoneInfo:
@@ -816,6 +918,51 @@ def check_sheet_source(source: SheetSource, notifier: ChangeNotifier) -> None:
     print(f"Detected {len(changes)} row change(s) for sheet source: {source.name}")
 
 
+def check_web_page_source(source: WebPageSource, notifier: ChangeNotifier) -> None:
+    """Fetch, diff, and alert on changes for a single watched web page source.
+
+    Args:
+        source: Web page identity to check.
+        notifier: Destination for a change alert when a prior snapshot differs.
+
+    Uses a conditional GET (ETag/Last-Modified) when prior values are known, so
+    a page that has not changed can be confirmed with a cheap 304 response
+    instead of re-downloading and re-diffing the full page.
+    """
+    snapshot_path = web_page_snapshot_path(source.name)
+    metadata_path = web_page_metadata_path(source.name)
+    previous_text = load_web_page_snapshot(snapshot_path)
+    previous_metadata = load_web_page_metadata(metadata_path)
+
+    current_text, etag, last_modified = fetch_web_page_text(
+        source, previous_metadata.get("etag") or None, previous_metadata.get("last_modified") or None
+    )
+    save_web_page_metadata(metadata_path, etag, last_modified)
+
+    if current_text is None:
+        print(f"Not modified since last check for web page source: {source.name}")
+        return
+
+    if previous_text is None:
+        save_web_page_snapshot(snapshot_path, current_text)
+        print(f"Recorded initial snapshot for web page source: {source.name}")
+        return
+
+    if current_text == previous_text:
+        print(f"No changes detected for web page source: {source.name}")
+        return
+
+    changes = diff_web_page_lines(parse_web_page_lines(previous_text), parse_web_page_lines(current_text))
+    if not changes:
+        save_web_page_snapshot(snapshot_path, current_text)
+        print(f"No changes detected for web page source: {source.name}")
+        return
+
+    notifier.notify_change(source.name, changes, hash_web_page_content(current_text), unit="line")
+    save_web_page_snapshot(snapshot_path, current_text)
+    print(f"Detected {len(changes)} line change(s) for web page source: {source.name}")
+
+
 def run_watch() -> int:
     """Check all configured sheet sources for changes and alert via Trello.
 
@@ -828,10 +975,10 @@ def run_watch() -> int:
     config = load_watch_config()
     board_id = find_board_id(config)
     triage_list_id = find_list_id(config, board_id)
-    notifier = TrelloChangeNotifier(TRELLO_SERVICE, SHEET_WATCHER_SERVICE, config, triage_list_id)
+    notifier = TrelloChangeNotifier(TRELLO_SERVICE, CONTENT_DIFF_SERVICE, config, triage_list_id)
 
     failed_source_names: list[str] = []
-    for source in config.sources:
+    for source in config.sheet_sources:
         try:
             check_sheet_source(source, notifier)
         except Exception as error:
@@ -840,6 +987,34 @@ def run_watch() -> int:
 
     if failed_source_names:
         raise SyncError(f"Sheet watch failed for source(s): {', '.join(failed_source_names)}")
+
+    return 0
+
+
+def run_watch_web_pages() -> int:
+    """Check all configured web page sources for changes and alert via Trello.
+
+    Returns:
+        Zero when all watched sources were checked without an unrecoverable error.
+
+    Raises:
+        SyncError: If one or more watched sources fail to fetch or diff.
+    """
+    config = load_watch_config()
+    board_id = find_board_id(config)
+    triage_list_id = find_list_id(config, board_id)
+    notifier = TrelloChangeNotifier(TRELLO_SERVICE, CONTENT_DIFF_SERVICE, config, triage_list_id)
+
+    failed_source_names: list[str] = []
+    for source in config.web_page_sources:
+        try:
+            check_web_page_source(source, notifier)
+        except Exception as error:
+            failed_source_names.append(source.name)
+            print(f"ERROR checking web page source {source.name}: {error}", file=sys.stderr)
+
+    if failed_source_names:
+        raise SyncError(f"Web page watch failed for source(s): {', '.join(failed_source_names)}")
 
     return 0
 
@@ -895,7 +1070,7 @@ def main() -> int:
     """Parse CLI arguments and dispatch to the appropriate routine.
 
     Usage:
-        python main.py [daily|monthly|watch] [optional-date-for-monthly]
+        python main.py [daily|monthly|watch|watch-web] [optional-date-for-monthly]
 
     For monthly, optional-date format: YYYY-MM or YYYY-MM-DD (defaults to current month).
 
@@ -927,8 +1102,10 @@ def main() -> int:
         return run_routine_with_failure_alert("monthly", lambda: run_monthly(target_date))
     elif routine == "watch":
         return run_routine_with_failure_alert("watch", run_watch)
+    elif routine == "watch-web":
+        return run_routine_with_failure_alert("watch-web", run_watch_web_pages)
     else:
-        print(f"Unknown routine: {routine}. Use 'daily', 'monthly', or 'watch'.", file=sys.stderr)
+        print(f"Unknown routine: {routine}. Use 'daily', 'monthly', 'watch', or 'watch-web'.", file=sys.stderr)
         raise SystemExit(1)
 
 

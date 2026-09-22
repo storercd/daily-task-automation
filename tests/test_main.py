@@ -501,7 +501,8 @@ def watch_config() -> main.WatchConfig:
         trello_api_token="token",
         trello_board_name="To Do",
         trello_list_name="Watch",
-        sources=[main.SheetSource(name="Choir Schedule", spreadsheet_id="sheet-1", gid="0")],
+        sheet_sources=[main.SheetSource(name="Choir Schedule", spreadsheet_id="sheet-1", gid="0")],
+        web_page_sources=[main.WebPageSource(name="Competition Schedule", url="https://example.com/schedule.html")],
     )
 
 
@@ -529,20 +530,48 @@ def test_parse_sheet_sources_raises_for_missing_fields():
         main.parse_sheet_sources('[{"name": "Choir Schedule"}]')
 
 
-def test_load_watch_config_raises_for_missing_environment_variables(monkeypatch):
+def test_load_watch_config_raises_for_missing_trello_environment_variables(monkeypatch):
+    monkeypatch.delenv("TRELLO_API_KEY", raising=False)
+    monkeypatch.setenv("TRELLO_API_TOKEN", "token")
+    monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
+    monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
+    monkeypatch.setenv("SHEET_WATCHERS", '[{"name": "X", "spreadsheet_id": "abc"}]')
+    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+
+    with pytest.raises(main.SyncError, match="TRELLO_API_KEY"):
+        main.load_watch_config()
+
+
+def test_load_watch_config_raises_when_no_sources_configured(monkeypatch):
     monkeypatch.delenv("SHEET_WATCHERS", raising=False)
+    monkeypatch.delenv("WEB_PAGE_WATCHERS", raising=False)
     monkeypatch.setenv("TRELLO_API_KEY", "key")
     monkeypatch.setenv("TRELLO_API_TOKEN", "token")
     monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
     monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
     monkeypatch.setattr(main, "load_dotenv", lambda: None)
 
-    with pytest.raises(main.SyncError, match="SHEET_WATCHERS"):
+    with pytest.raises(main.SyncError, match="At least one of"):
         main.load_watch_config()
 
 
+def test_load_watch_config_accepts_web_page_watchers_only(monkeypatch):
+    monkeypatch.delenv("SHEET_WATCHERS", raising=False)
+    monkeypatch.setenv("TRELLO_API_KEY", "key")
+    monkeypatch.setenv("TRELLO_API_TOKEN", "token")
+    monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
+    monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
+    monkeypatch.setenv("WEB_PAGE_WATCHERS", '[{"name": "Schedule", "url": "https://example.com"}]')
+    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+
+    config = main.load_watch_config()
+
+    assert config.sheet_sources == []
+    assert config.web_page_sources == [main.WebPageSource(name="Schedule", url="https://example.com")]
+
+
 def test_check_sheet_source_records_initial_snapshot_without_alert(monkeypatch, tmp_path, watch_config, capsys):
-    source = watch_config.sources[0]
+    source = watch_config.sheet_sources[0]
     notified = []
 
     monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
@@ -560,7 +589,7 @@ def test_check_sheet_source_records_initial_snapshot_without_alert(monkeypatch, 
 
 
 def test_check_sheet_source_notifies_on_change(monkeypatch, tmp_path, watch_config, capsys):
-    source = watch_config.sources[0]
+    source = watch_config.sheet_sources[0]
     snapshot_path = tmp_path / "choir-schedule.csv"
     snapshot_path.write_text("name,date\nAlice,2026-01-01\n")
     notified = []
@@ -582,7 +611,7 @@ def test_check_sheet_source_notifies_on_change(monkeypatch, tmp_path, watch_conf
 
 
 def test_check_sheet_source_skips_alert_when_unchanged(monkeypatch, tmp_path, watch_config, capsys):
-    source = watch_config.sources[0]
+    source = watch_config.sheet_sources[0]
     (tmp_path / "choir-schedule.csv").write_text("name,date\nAlice,2026-01-01\n")
 
     monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
@@ -600,7 +629,7 @@ def test_check_sheet_source_skips_alert_when_unchanged(monkeypatch, tmp_path, wa
 def test_check_sheet_source_skips_alert_when_raw_text_drifts_but_rows_match(
     monkeypatch, tmp_path, watch_config, capsys
 ):
-    source = watch_config.sources[0]
+    source = watch_config.sheet_sources[0]
     snapshot_path = tmp_path / "choir-schedule.csv"
     snapshot_path.write_text("name,date\nAlice,2026-01-01\n")
 
@@ -619,7 +648,7 @@ def test_check_sheet_source_skips_alert_when_raw_text_drifts_but_rows_match(
 
 def test_run_watch_raises_and_continues_after_source_failure(monkeypatch, watch_config):
     working_source = main.SheetSource(name="Working Sheet", spreadsheet_id="sheet-2", gid="0")
-    watch_config.sources.append(working_source)
+    watch_config.sheet_sources.append(working_source)
     checked = []
 
     monkeypatch.setattr(main, "load_watch_config", lambda: watch_config)
@@ -637,6 +666,102 @@ def test_run_watch_raises_and_continues_after_source_failure(monkeypatch, watch_
         main.run_watch()
 
     assert checked == ["Working Sheet"]
+
+
+def test_check_web_page_source_records_initial_snapshot_without_alert(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.web_page_sources[0]
+    notified = []
+
+    monkeypatch.setattr(main, "WEB_PAGE_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: ("Event on Jan 1", None, None))
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash, unit="row"):
+            notified.append((source_name, changes, content_hash, unit))
+
+    main.check_web_page_source(source, FakeNotifier())
+
+    assert notified == []
+    assert "Recorded initial snapshot" in capsys.readouterr().out
+    assert main.web_page_snapshot_path(source.name).read_text() == "Event on Jan 1"
+
+
+def test_check_web_page_source_notifies_on_change_with_line_unit(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.web_page_sources[0]
+    snapshot_path = tmp_path / "competition-schedule.txt"
+    snapshot_path.write_text("Event on Jan 1")
+    notified = []
+
+    monkeypatch.setattr(main, "WEB_PAGE_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: ("Event on Feb 15", None, None))
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash, unit="row"):
+            notified.append((source_name, changes, content_hash, unit))
+
+    main.check_web_page_source(source, FakeNotifier())
+
+    assert len(notified) == 1
+    assert notified[0][0] == "Competition Schedule"
+    assert notified[0][3] == "line"
+    assert snapshot_path.read_text() == "Event on Feb 15"
+    assert "Detected 1 line change(s)" in capsys.readouterr().out
+
+
+def test_check_web_page_source_skips_when_not_modified(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.web_page_sources[0]
+    (tmp_path / "competition-schedule.txt").write_text("Event on Jan 1")
+
+    monkeypatch.setattr(main, "WEB_PAGE_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: (None, etag, last_modified))
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash, unit="row"):
+            raise AssertionError("notify_change should not be called when not modified")
+
+    main.check_web_page_source(source, FakeNotifier())
+
+    assert "Not modified since last check" in capsys.readouterr().out
+
+
+def test_check_web_page_source_persists_conditional_get_metadata(monkeypatch, tmp_path, watch_config):
+    source = watch_config.web_page_sources[0]
+
+    monkeypatch.setattr(main, "WEB_PAGE_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        main, "fetch_web_page_text", lambda src, etag, last_modified: ("Event on Jan 1", "etag-1", "last-mod-1")
+    )
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash, unit="row"):
+            pass
+
+    main.check_web_page_source(source, FakeNotifier())
+
+    metadata = main.load_web_page_metadata(main.web_page_metadata_path(source.name))
+    assert metadata == {"etag": "etag-1", "last_modified": "last-mod-1"}
+
+
+def test_run_watch_web_pages_raises_and_continues_after_source_failure(monkeypatch, watch_config):
+    working_source = main.WebPageSource(name="Working Page", url="https://example.com/working")
+    watch_config.web_page_sources.append(working_source)
+    checked = []
+
+    monkeypatch.setattr(main, "load_watch_config", lambda: watch_config)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+
+    def fake_check(source, notifier):
+        if source.name == "Competition Schedule":
+            raise main.SyncError("fetch failed")
+        checked.append(source.name)
+
+    monkeypatch.setattr(main, "check_web_page_source", fake_check)
+
+    with pytest.raises(main.SyncError, match="Competition Schedule"):
+        main.run_watch_web_pages()
+
+    assert checked == ["Working Page"]
 
 
 def test_notify_job_failure_creates_alert_card(monkeypatch, config, timezone):
