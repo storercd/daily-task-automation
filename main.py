@@ -386,6 +386,19 @@ def get_local_timezone() -> ZoneInfo:
     return ZoneInfo(str(local_zone))
 
 
+def get_current_date(timezone: ZoneInfo | None = None) -> date:
+    """Return the current local calendar date in the active timezone.
+
+    Args:
+        timezone: Optional timezone override used when tests need a deterministic date.
+
+    Returns:
+        The current date in the supplied timezone or the system local timezone.
+    """
+    active_timezone = timezone or get_local_timezone()
+    return datetime.now(active_timezone).date()
+
+
 def get_retry_delay_seconds(attempt_number: int) -> int:
     """Compute exponential backoff delay for a retry attempt."""
     return HTTP_CLIENT.get_retry_delay_seconds(attempt_number)
@@ -633,7 +646,7 @@ def run_daily() -> int:
     """
     config = load_config()
     timezone = get_local_timezone()
-    current_date = datetime.now(timezone).date()
+    current_date = get_current_date(timezone)
     board_id = find_board_id(config)
     triage_list_id = find_list_id(config, board_id)
 
@@ -845,7 +858,7 @@ def notify_job_failure(job_name: str, error: Exception) -> None:
         config = load_config()
         board_id = find_board_id(config)
         list_id = find_list_id(config, board_id)
-        today_key = datetime.now(get_local_timezone()).date().isoformat()
+        today_key = get_current_date().isoformat()
         marker = f"{FAILURE_ALERT_MARKER_PREFIX} {job_name}::{today_key}"
         TRELLO_SERVICE.create_alert_card(
             config,

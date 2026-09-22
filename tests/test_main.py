@@ -329,6 +329,7 @@ def test_run_creates_date_status_file_and_processes_today_only_when_missing(monk
     monkeypatch.setattr(main, "DATE_STATUS_FILE_PATH", str(status_file_path))
     monkeypatch.setattr(main, "load_config", lambda: config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "get_current_date", lambda timezone=None: date(2026, 4, 27))
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(
@@ -356,6 +357,7 @@ def test_run_backfills_missing_dates_from_status_file(monkeypatch, config, timez
 
     monkeypatch.setattr(main, "load_config", lambda: config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "get_current_date", lambda timezone=None: date(2026, 4, 27))
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: dict(stored_statuses))
@@ -382,6 +384,7 @@ def test_run_marks_failure_and_raises_sync_error(monkeypatch, config, timezone):
 
     monkeypatch.setattr(main, "load_config", lambda: config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "get_current_date", lambda timezone=None: date(2026, 4, 27))
     monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
     monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
     monkeypatch.setattr(main, "load_processed_date_statuses", lambda file_path: {})
