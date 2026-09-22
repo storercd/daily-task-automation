@@ -1,10 +1,11 @@
 # Daily Task Automation
 
-This script runs daily Trello routines plus a monthly low-tide routine:
+This script runs daily Trello routines, a monthly low-tide routine, and a sheet-watch routine:
 
 - It reads all events for the current local day from a Google Calendar iCal feed and creates Trello cards in the `Triage` list.
 - It moves Trello cards with a due date of today or earlier into the `Triage` list.
 - It fetches NOAA monthly high/low tide predictions for Everett, WA (station `9447659`), finds low tides below `0.00` feet, and creates one-hour Google Calendar events for those times.
+- It checks configured, publicly-readable Google Sheets for row/cell changes since the last check, and creates a Trello alert card describing what changed.
 
 Behavior:
 - All-day events are imported.
@@ -14,6 +15,7 @@ Behavior:
 - Each run records per-date status in `logs/processed_dates.json`.
 - If previous dates were missed or failed, the next run backfills those dates automatically before completing today.
 - On first run (when the status file does not exist), the status file is created and only today is processed.
+- If any routine (`daily`, `monthly`, or `watch`) fails, a Trello alert card identifying the failing job is created (deduplicated per job per day) so it can be investigated.
 
 ## Setup
 
@@ -45,6 +47,23 @@ Monthly routine configuration (`.env`):
 	- Option A: `GOOGLE_OAUTH_ACCESS_TOKEN`
 	- Option B (recommended for automation): `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN`
 	- Optional override: `GOOGLE_OAUTH_TOKEN_URL` (defaults to `https://oauth2.googleapis.com/token`)
+
+Run sheet-watch routine explicitly:
+
+```bash
+source .venv/bin/activate
+python main.py watch
+```
+
+Sheet-watch routine configuration (`.env`):
+
+- Uses the same `TRELLO_API_KEY`, `TRELLO_API_TOKEN`, `TRELLO_BOARD_NAME`, and `TRELLO_LIST_NAME` as the daily routine.
+- `SHEET_WATCHERS`: a JSON array of watched sheet tabs, e.g. `[{"name": "Choir Schedule", "spreadsheet_id": "<id>", "gid": "0"}]`.
+  - Each sheet must be shared as "Anyone with the link" (view only) so it can be fetched via the public CSV export endpoint.
+  - `spreadsheet_id` and `gid` come from the sheet's URL: `.../spreadsheets/d/<spreadsheet_id>/edit?gid=<gid>`.
+- On the first run for a source, only a baseline snapshot is recorded to `state/sheet_watchers/<name>.csv`; no alert is sent.
+- Subsequent runs diff the new CSV against the stored snapshot (row-level and cell-level) and create a Trello card in `TRELLO_LIST_NAME` describing the change, deduplicated by a content-hash marker.
+- Alerting is decoupled from detection (see `core/notifiers.py`), so a non-Trello notifier could be added later without changing the fetch/diff logic.
 
 ## Test
 
@@ -84,6 +103,25 @@ tail -f logs/launchd.stdout.log logs/launchd.stderr.log
 ```
 
 To change the schedule, edit `Hour` and `Minute` in the plist, copy it back into `~/Library/LaunchAgents/`, then run the `bootout` and `bootstrap` commands again.
+
+The sheet-watch routine has its own LaunchAgent, kept separate from the daily job so its
+frequency can be changed independently later. It currently runs once a day at 6:00 AM:
+
+Files:
+- `scripts/run_watch_task_automation.sh`
+- `launchd/com.storercd.watch-task-automation.plist`
+
+```bash
+mkdir -p state ~/Library/LaunchAgents
+chmod +x scripts/run_watch_task_automation.sh
+cp launchd/com.storercd.watch-task-automation.plist ~/Library/LaunchAgents/
+launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-task-automation.plist 2>/dev/null || true
+launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-task-automation.plist
+launchctl enable gui/"$(id -u)"/com.storercd.watch-task-automation
+```
+
+To run it more often later (e.g. hourly), switch its `StartCalendarInterval` for a
+`StartInterval` (seconds) in the plist, then repeat the `bootout`/`bootstrap` commands above.
 
 ## Notes
 

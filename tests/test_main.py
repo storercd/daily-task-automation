@@ -489,3 +489,187 @@ def test_run_monthly_returns_zero_when_no_negative_low_tides(monkeypatch, timezo
     assert main.run_monthly() == 0
     output = capsys.readouterr().out
     assert "No negative low tides found" in output
+
+
+@pytest.fixture
+def watch_config() -> main.WatchConfig:
+    return main.WatchConfig(
+        trello_api_key="key",
+        trello_api_token="token",
+        trello_board_name="To Do",
+        trello_list_name="Watch",
+        sources=[main.SheetSource(name="Choir Schedule", spreadsheet_id="sheet-1", gid="0")],
+    )
+
+
+def test_parse_sheet_sources_parses_json():
+    sources = main.parse_sheet_sources(
+        '[{"name": "Choir Schedule", "spreadsheet_id": "abc123", "gid": "42"}]'
+    )
+
+    assert sources == [main.SheetSource(name="Choir Schedule", spreadsheet_id="abc123", gid="42")]
+
+
+def test_parse_sheet_sources_defaults_gid_to_zero():
+    sources = main.parse_sheet_sources('[{"name": "Choir Schedule", "spreadsheet_id": "abc123"}]')
+
+    assert sources[0].gid == "0"
+
+
+def test_parse_sheet_sources_raises_for_invalid_json():
+    with pytest.raises(main.SyncError, match="valid JSON"):
+        main.parse_sheet_sources("not-json")
+
+
+def test_parse_sheet_sources_raises_for_missing_fields():
+    with pytest.raises(main.SyncError, match="requires 'name'"):
+        main.parse_sheet_sources('[{"name": "Choir Schedule"}]')
+
+
+def test_load_watch_config_raises_for_missing_environment_variables(monkeypatch):
+    monkeypatch.delenv("SHEET_WATCHERS", raising=False)
+    monkeypatch.setenv("TRELLO_API_KEY", "key")
+    monkeypatch.setenv("TRELLO_API_TOKEN", "token")
+    monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
+    monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
+    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+
+    with pytest.raises(main.SyncError, match="SHEET_WATCHERS"):
+        main.load_watch_config()
+
+
+def test_check_sheet_source_records_initial_snapshot_without_alert(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.sources[0]
+    notified = []
+
+    monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-01-01\n")
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash):
+            notified.append((source_name, changes, content_hash))
+
+    main.check_sheet_source(source, FakeNotifier())
+
+    assert notified == []
+    assert "Recorded initial snapshot" in capsys.readouterr().out
+    assert main.sheet_snapshot_path(source.name).read_text() == "name,date\nAlice,2026-01-01\n"
+
+
+def test_check_sheet_source_notifies_on_change(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.sources[0]
+    snapshot_path = tmp_path / "choir-schedule.csv"
+    snapshot_path.write_text("name,date\nAlice,2026-01-01\n")
+    notified = []
+
+    monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-02-15\n")
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash):
+            notified.append((source_name, changes, content_hash))
+
+    main.check_sheet_source(source, FakeNotifier())
+
+    assert len(notified) == 1
+    assert notified[0][0] == "Choir Schedule"
+    assert notified[0][1][0].kind == "modified"
+    assert snapshot_path.read_text() == "name,date\nAlice,2026-02-15\n"
+    assert "Detected 1 row change(s)" in capsys.readouterr().out
+
+
+def test_check_sheet_source_skips_alert_when_unchanged(monkeypatch, tmp_path, watch_config, capsys):
+    source = watch_config.sources[0]
+    (tmp_path / "choir-schedule.csv").write_text("name,date\nAlice,2026-01-01\n")
+
+    monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-01-01\n")
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash):
+            raise AssertionError("notify_change should not be called when content is unchanged")
+
+    main.check_sheet_source(source, FakeNotifier())
+
+    assert "No changes detected" in capsys.readouterr().out
+
+
+def test_check_sheet_source_skips_alert_when_raw_text_drifts_but_rows_match(
+    monkeypatch, tmp_path, watch_config, capsys
+):
+    source = watch_config.sources[0]
+    snapshot_path = tmp_path / "choir-schedule.csv"
+    snapshot_path.write_text("name,date\nAlice,2026-01-01\n")
+
+    monkeypatch.setattr(main, "SHEET_WATCH_SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: 'name,date\n"Alice",2026-01-01\n')
+
+    class FakeNotifier:
+        def notify_change(self, source_name, changes, content_hash):
+            raise AssertionError("notify_change should not be called when no rows actually changed")
+
+    main.check_sheet_source(source, FakeNotifier())
+
+    assert "No changes detected" in capsys.readouterr().out
+    assert snapshot_path.read_text() == 'name,date\n"Alice",2026-01-01\n'
+
+
+def test_run_watch_raises_and_continues_after_source_failure(monkeypatch, watch_config):
+    working_source = main.SheetSource(name="Working Sheet", spreadsheet_id="sheet-2", gid="0")
+    watch_config.sources.append(working_source)
+    checked = []
+
+    monkeypatch.setattr(main, "load_watch_config", lambda: watch_config)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+
+    def fake_check(source, notifier):
+        if source.name == "Choir Schedule":
+            raise main.SyncError("fetch failed")
+        checked.append(source.name)
+
+    monkeypatch.setattr(main, "check_sheet_source", fake_check)
+
+    with pytest.raises(main.SyncError, match="Choir Schedule"):
+        main.run_watch()
+
+    assert checked == ["Working Sheet"]
+
+
+def test_notify_job_failure_creates_alert_card(monkeypatch, config, timezone):
+    created_cards = []
+
+    monkeypatch.setattr(main, "load_config", lambda: config)
+    monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
+    monkeypatch.setattr(main, "find_board_id", lambda config: "board-1")
+    monkeypatch.setattr(main, "find_list_id", lambda config, board_id: "list-1")
+    monkeypatch.setattr(
+        main.TRELLO_SERVICE,
+        "create_alert_card",
+        lambda config, list_id, name, description, marker: created_cards.append((name, description, marker)),
+    )
+
+    main.notify_job_failure("watch", main.SyncError("boom"))
+
+    assert len(created_cards) == 1
+    assert "watch" in created_cards[0][0]
+    assert "boom" in created_cards[0][1]
+
+
+def test_run_routine_with_failure_alert_sends_alert_and_reraises(monkeypatch):
+    alerts = []
+    monkeypatch.setattr(main, "notify_job_failure", lambda job_name, error: alerts.append((job_name, error)))
+
+    def failing_routine():
+        raise main.SyncError("boom")
+
+    with pytest.raises(main.SyncError, match="boom"):
+        main.run_routine_with_failure_alert("watch", failing_routine)
+
+    assert alerts[0][0] == "watch"
+
+
+def test_run_routine_with_failure_alert_returns_result_on_success(monkeypatch):
+    monkeypatch.setattr(main, "notify_job_failure", lambda job_name, error: pytest.fail("should not be called"))
+
+    assert main.run_routine_with_failure_alert("watch", lambda: 0) == 0

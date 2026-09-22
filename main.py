@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -19,22 +20,36 @@ from icalendar import Calendar
 from tzlocal import get_localzone
 
 from core.errors import SyncError
-from core.models import CalendarEvent, Config, LowTidePrediction, MonthlyConfig, TrelloCard
+from core.models import (
+    CalendarEvent,
+    Config,
+    LowTidePrediction,
+    MonthlyConfig,
+    RowChange,
+    SheetSource,
+    TrelloCard,
+    WatchConfig,
+)
+from core.notifiers import ChangeNotifier
 from services.google_calendar import GoogleCalendarService
 from services.google_calendar_events import GoogleCalendarEventService
 from services.http_client import HttpClient
 from services.noaa_tides import NoaaTideService
+from services.sheet_watcher import SheetWatcherService
 from services.trello import TrelloService
+from services.trello_change_notifier import TrelloChangeNotifier
 
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
 LOW_TIDE_MARKER_PREFIX = "LOW-TIDE-KEY:"
+FAILURE_ALERT_MARKER_PREFIX = "FAILURE-ALERT-KEY:"
 RUN_CALENDAR_SYNC = True
 RUN_DUE_CARD_TRIAGE = True
 MAX_REQUEST_ATTEMPTS = 3
 INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
+SHEET_WATCH_SNAPSHOT_DIR = Path("state") / "sheet_watchers"
 DEFAULT_NOAA_STATION_ID = "9447659"
 DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 MONTHLY_EVENT_DURATION = timedelta(hours=1)
@@ -48,6 +63,7 @@ GOOGLE_CALENDAR_SERVICE = GoogleCalendarService(HTTP_CLIENT)
 GOOGLE_CALENDAR_EVENT_SERVICE = GoogleCalendarEventService(HTTP_CLIENT, LOW_TIDE_MARKER_PREFIX)
 NOAA_TIDE_SERVICE = NoaaTideService(HTTP_CLIENT)
 TRELLO_SERVICE = TrelloService(HTTP_CLIENT, TRELLO_API_BASE_URL, UID_MARKER_PREFIX)
+SHEET_WATCHER_SERVICE = SheetWatcherService(HTTP_CLIENT)
 
 
 def ensure_parent_directory(file_path: str) -> None:
@@ -245,6 +261,68 @@ def load_monthly_config() -> MonthlyConfig:
     return config
 
 
+def parse_sheet_sources(sources_json: str) -> list[SheetSource]:
+    """Parse the SHEET_WATCHERS environment variable into SheetSource entries.
+
+    Args:
+        sources_json: JSON array string, e.g. '[{"name": "X", "spreadsheet_id": "abc", "gid": "0"}]'.
+
+    Returns:
+        Parsed list of SheetSource entries.
+
+    Raises:
+        SyncError: If the value is not valid JSON or not a JSON array of objects.
+    """
+    try:
+        raw_sources = json.loads(sources_json)
+    except json.JSONDecodeError as error:
+        raise SyncError("SHEET_WATCHERS must be valid JSON") from error
+
+    if not isinstance(raw_sources, list):
+        raise SyncError("SHEET_WATCHERS must be a JSON array")
+
+    try:
+        return [
+            SheetSource(name=entry["name"], spreadsheet_id=entry["spreadsheet_id"], gid=str(entry.get("gid", "0")))
+            for entry in raw_sources
+        ]
+    except (KeyError, TypeError) as error:
+        raise SyncError("Each SHEET_WATCHERS entry requires 'name' and 'spreadsheet_id'") from error
+
+
+def load_watch_config() -> WatchConfig:
+    """Load and validate required environment variables for the sheet-watch routine."""
+    load_dotenv()
+
+    trello_api_key = os.getenv("TRELLO_API_KEY", "").strip()
+    trello_api_token = os.getenv("TRELLO_API_TOKEN", "").strip()
+    trello_board_name = os.getenv("TRELLO_BOARD_NAME", "").strip()
+    trello_list_name = os.getenv("TRELLO_LIST_NAME", "").strip()
+    sources_raw = os.getenv("SHEET_WATCHERS", "").strip()
+
+    missing_values = [
+        name
+        for name, value in (
+            ("TRELLO_API_KEY", trello_api_key),
+            ("TRELLO_API_TOKEN", trello_api_token),
+            ("TRELLO_BOARD_NAME", trello_board_name),
+            ("TRELLO_LIST_NAME", trello_list_name),
+            ("SHEET_WATCHERS", sources_raw),
+        )
+        if not value
+    ]
+    if missing_values:
+        raise SyncError(f"Missing required watch environment variables: {', '.join(missing_values)}")
+
+    return WatchConfig(
+        trello_api_key=trello_api_key,
+        trello_api_token=trello_api_token,
+        trello_board_name=trello_board_name,
+        trello_list_name=trello_list_name,
+        sources=parse_sheet_sources(sources_raw),
+    )
+
+
 def build_month_bounds(target_date: date) -> tuple[date, date]:
     """Return first and last dates for target_date's month."""
     month_start = target_date.replace(day=1)
@@ -259,6 +337,41 @@ def build_month_bounds(target_date: date) -> tuple[date, date]:
 def build_low_tide_marker(station_id: str, prediction: LowTidePrediction) -> str:
     """Build deduplication marker for one low-tide prediction."""
     return f"{station_id}::{prediction.timestamp.isoformat()}"
+
+
+def fetch_sheet_csv(source: SheetSource) -> str:
+    """Download the current sheet tab contents as CSV text."""
+    return SHEET_WATCHER_SERVICE.fetch_sheet_csv(source)
+
+
+def parse_csv_rows(csv_text: str) -> list[list[str]]:
+    """Parse CSV text into a list of row value lists."""
+    return SHEET_WATCHER_SERVICE.parse_csv_rows(csv_text)
+
+
+def hash_sheet_content(csv_text: str) -> str:
+    """Compute a stable content hash used for alert deduplication."""
+    return SHEET_WATCHER_SERVICE.hash_content(csv_text)
+
+
+def sheet_snapshot_path(source_name: str) -> Path:
+    """Build the snapshot file path for one watched sheet source."""
+    return SHEET_WATCHER_SERVICE.snapshot_path(SHEET_WATCH_SNAPSHOT_DIR, source_name)
+
+
+def load_sheet_snapshot(snapshot_path: Path) -> str | None:
+    """Load the previously stored snapshot's raw CSV text, if any."""
+    return SHEET_WATCHER_SERVICE.load_snapshot(snapshot_path)
+
+
+def save_sheet_snapshot(snapshot_path: Path, csv_text: str) -> None:
+    """Persist the current CSV text as the new snapshot."""
+    SHEET_WATCHER_SERVICE.save_snapshot(snapshot_path, csv_text)
+
+
+def diff_sheet_rows(old_rows: list[list[str]], new_rows: list[list[str]]) -> list[RowChange]:
+    """Compute row-level and cell-level changes between two CSV row sets."""
+    return SHEET_WATCHER_SERVICE.diff_rows(old_rows, new_rows)
 
 
 def get_local_timezone() -> ZoneInfo:
@@ -655,11 +768,121 @@ def run_monthly(target_month_date: date | None = None) -> int:
     return 0
 
 
+def check_sheet_source(source: SheetSource, notifier: ChangeNotifier) -> None:
+    """Fetch, diff, and alert on changes for a single watched sheet source.
+
+    Args:
+        source: Sheet identity to check.
+        notifier: Destination for a change alert when a prior snapshot differs.
+
+    On first run for a source (no prior snapshot), only a baseline snapshot is
+    recorded; no alert is sent since there is nothing to compare against.
+    """
+    snapshot_path = sheet_snapshot_path(source.name)
+    current_csv = fetch_sheet_csv(source)
+    previous_csv = load_sheet_snapshot(snapshot_path)
+
+    if previous_csv is None:
+        save_sheet_snapshot(snapshot_path, current_csv)
+        print(f"Recorded initial snapshot for sheet source: {source.name}")
+        return
+
+    if current_csv == previous_csv:
+        print(f"No changes detected for sheet source: {source.name}")
+        return
+
+    changes = diff_sheet_rows(parse_csv_rows(previous_csv), parse_csv_rows(current_csv))
+    if not changes:
+        # Raw export text can drift slightly (whitespace/quoting) with no real row changes.
+        save_sheet_snapshot(snapshot_path, current_csv)
+        print(f"No changes detected for sheet source: {source.name}")
+        return
+
+    notifier.notify_change(source.name, changes, hash_sheet_content(current_csv))
+    save_sheet_snapshot(snapshot_path, current_csv)
+    print(f"Detected {len(changes)} row change(s) for sheet source: {source.name}")
+
+
+def run_watch() -> int:
+    """Check all configured sheet sources for changes and alert via Trello.
+
+    Returns:
+        Zero when all watched sources were checked without an unrecoverable error.
+
+    Raises:
+        SyncError: If one or more watched sources fail to fetch or diff.
+    """
+    config = load_watch_config()
+    board_id = find_board_id(config)
+    triage_list_id = find_list_id(config, board_id)
+    notifier = TrelloChangeNotifier(TRELLO_SERVICE, SHEET_WATCHER_SERVICE, config, triage_list_id)
+
+    failed_source_names: list[str] = []
+    for source in config.sources:
+        try:
+            check_sheet_source(source, notifier)
+        except Exception as error:
+            failed_source_names.append(source.name)
+            print(f"ERROR checking sheet source {source.name}: {error}", file=sys.stderr)
+
+    if failed_source_names:
+        raise SyncError(f"Sheet watch failed for source(s): {', '.join(failed_source_names)}")
+
+    return 0
+
+
+def notify_job_failure(job_name: str, error: Exception) -> None:
+    """Create a deduplicated Trello alert card identifying a failing automation job.
+
+    Args:
+        job_name: Routine name that failed (e.g. "daily", "monthly", "watch").
+        error: The exception raised by the failing routine.
+
+    Failures to send the alert itself are logged but not re-raised, so they
+    never mask the original routine failure.
+    """
+    try:
+        config = load_config()
+        board_id = find_board_id(config)
+        list_id = find_list_id(config, board_id)
+        today_key = datetime.now(get_local_timezone()).date().isoformat()
+        marker = f"{FAILURE_ALERT_MARKER_PREFIX} {job_name}::{today_key}"
+        TRELLO_SERVICE.create_alert_card(
+            config,
+            list_id,
+            f"[ALERT] {job_name} automation failed",
+            f"Job '{job_name}' failed with error:\n\n{error}",
+            marker,
+        )
+    except Exception as notify_error:
+        print(f"Failed to send failure alert for job '{job_name}': {notify_error}", file=sys.stderr)
+
+
+def run_routine_with_failure_alert(job_name: str, routine: Callable[[], int]) -> int:
+    """Run a routine and send a Trello failure alert if it raises.
+
+    Args:
+        job_name: Human-readable routine name used in the alert card.
+        routine: Zero-argument callable that runs the routine and returns an exit code.
+
+    Returns:
+        The routine's exit code.
+
+    Raises:
+        Exception: Re-raises whatever the routine raised, after sending the alert.
+    """
+    try:
+        return routine()
+    except Exception as error:
+        notify_job_failure(job_name, error)
+        raise
+
+
 def main() -> int:
     """Parse CLI arguments and dispatch to the appropriate routine.
 
     Usage:
-        python main.py [daily|monthly] [optional-date-for-monthly]
+        python main.py [daily|monthly|watch] [optional-date-for-monthly]
 
     For monthly, optional-date format: YYYY-MM or YYYY-MM-DD (defaults to current month).
 
@@ -673,7 +896,7 @@ def main() -> int:
         routine = sys.argv[1].lower()
 
     if routine == "daily":
-        return run_daily()
+        return run_routine_with_failure_alert("daily", run_daily)
     elif routine == "monthly":
         if len(sys.argv) > 2:
             date_str = sys.argv[2]
@@ -688,9 +911,11 @@ def main() -> int:
             except (ValueError, AttributeError) as e:
                 print(f"Error parsing date: {e}", file=sys.stderr)
                 raise SystemExit(1)
-        return run_monthly(target_date)
+        return run_routine_with_failure_alert("monthly", lambda: run_monthly(target_date))
+    elif routine == "watch":
+        return run_routine_with_failure_alert("watch", run_watch)
     else:
-        print(f"Unknown routine: {routine}. Use 'daily' or 'monthly'.", file=sys.stderr)
+        print(f"Unknown routine: {routine}. Use 'daily', 'monthly', or 'watch'.", file=sys.stderr)
         raise SystemExit(1)
 
 

@@ -58,3 +58,34 @@ class LowTidePrediction:
 
     timestamp: datetime
     height_feet: float
+
+
+@dataclass
+class SheetSource:
+    """Identify one publicly readable Google Sheet tab to watch for changes."""
+
+    name: str
+    spreadsheet_id: str
+    gid: str = "0"
+
+
+@dataclass
+class WatchConfig:
+    """Store required runtime settings for the sheet-watch routine."""
+
+    trello_api_key: str
+    trello_api_token: str
+    trello_board_name: str
+    trello_list_name: str
+    sources: list[SheetSource]
+
+
+@dataclass
+class RowChange:
+    """Describe one added, removed, or modified row detected between two CSV snapshots."""
+
+    kind: str
+    row_index: int
+    old_row: list[str] | None
+    new_row: list[str] | None
+    cell_changes: list[tuple[int, str, str]]

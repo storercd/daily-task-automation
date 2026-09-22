@@ -230,3 +230,39 @@ class TrelloService:
                 )
 
         raise SyncError(f"Card creation retries exhausted for event {event.summary}")
+
+    def marker_exists(self, config: Config, list_id: str, marker: str) -> bool:
+        """Check whether any card in a list already contains the given marker text."""
+        cards = self.request(
+            "GET",
+            f"/lists/{list_id}/cards",
+            config.trello_api_key,
+            config.trello_api_token,
+            params={"fields": "desc"},
+        )
+        return any(marker in card.get("desc", "") for card in cards)
+
+    def create_alert_card(self, config: Config, list_id: str, name: str, description: str, marker: str) -> bool:
+        """Create a generic alert card unless one with the same marker already exists.
+
+        Args:
+            config: Runtime configuration with Trello credentials.
+            list_id: Destination Trello list ID.
+            name: Card title.
+            description: Card description body, before the marker is appended.
+            marker: Deduplication marker text unique to this alert occurrence.
+
+        Returns:
+            True when a new card was created; False when a matching card already existed.
+        """
+        if self.marker_exists(config, list_id, marker):
+            return False
+
+        self.request(
+            "POST",
+            "/cards",
+            config.trello_api_key,
+            config.trello_api_token,
+            params={"idList": list_id, "name": name, "desc": f"{description}\n\n{marker}", "pos": "top"},
+        )
+        return True

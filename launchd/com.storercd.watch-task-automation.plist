@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.storercd.watch-task-automation</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/christopherstorer/github/personal/daily-task-automation/scripts/run_watch_task_automation.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.watch.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.watch.stderr.log</string>
+</dict>
+</plist>
