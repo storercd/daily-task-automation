@@ -14,6 +14,7 @@ Behavior:
 - Duplicate calendar cards are skipped based on a per-occurrence event marker.
 - Open Trello cards with incomplete due dates of today or earlier are moved to `Triage`.
 - Each run records per-date status in `logs/processed_dates.json`.
+- LaunchAgent output lines are timestamped, and common token/password patterns are redacted before they reach stdout/stderr logs.
 - If previous dates were missed or failed, the next run backfills those dates automatically before completing today.
 - On first run (when the status file does not exist), the status file is created and only today is processed.
 - If any routine (`daily`, `monthly`, `watch`, or `watch-web`) fails, a Trello alert card identifying the failing job is created (deduplicated per job per day) so it can be investigated.

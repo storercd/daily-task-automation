@@ -20,6 +20,7 @@ from icalendar import Calendar
 from tzlocal import get_localzone
 
 from core.errors import SyncError
+from core.log_output import install_log_output_filters
 from core.models import (
     CalendarEvent,
     Config,
@@ -1110,6 +1111,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    install_log_output_filters()
     try:
         raise SystemExit(main())
     except requests.HTTPError as error:
