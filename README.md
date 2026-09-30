@@ -4,7 +4,7 @@ This script runs daily Trello routines, a monthly low-tide routine, and two watc
 
 - It reads all events for the current local day from a Google Calendar iCal feed and creates Trello cards in the `Triage` list.
 - It moves Trello cards with a due date of today or earlier into the `Triage` list.
-- It fetches NOAA monthly high/low tide predictions for Everett, WA (station `9447659`), finds low tides below `0.00` feet, and creates one-hour Google Calendar events for those times.
+- It fetches NOAA monthly high/low tide predictions for Everett, WA (station `9447659`), finds negative low tides during waking hours, and creates one-hour Google Calendar events for those times. Waking hours are calculated locally from Everett sunrise and sunset, with a 30-minute buffer before sunrise and after sunset.
 - It checks configured, publicly-readable Google Sheets for row/cell changes since the last check, and creates a Trello alert card describing what changed.
 - It checks configured plain web pages for visible-text changes since the last check, and creates a Trello alert card describing what changed.
 

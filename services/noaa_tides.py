@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from astral import Observer
+from astral.sun import sun
 
 from core.errors import SyncError
 from core.models import LowTidePrediction
 from services.http_client import HttpClient
+
+EVERETT_OBSERVER = Observer(latitude=47.97898, longitude=-122.20208)
+DAYLIGHT_BUFFER = timedelta(minutes=30)
 
 
 class NoaaTideService:
@@ -68,8 +74,19 @@ class NoaaTideService:
                 continue
 
             local_timestamp = datetime.strptime(timestamp_text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone)
+            if not is_within_waking_hours(local_timestamp, timezone):
+                continue
+
             negative_low_tides.append(
                 LowTidePrediction(timestamp=local_timestamp, height_feet=height_feet)
             )
 
         return negative_low_tides
+
+
+def is_within_waking_hours(timestamp: datetime, timezone: ZoneInfo) -> bool:
+    """Return whether a timestamp is within 30 minutes of daylight hours."""
+    solar_times = sun(EVERETT_OBSERVER, date=timestamp.date(), tzinfo=timezone)
+    earliest_time = solar_times["sunrise"] - DAYLIGHT_BUFFER
+    latest_time = solar_times["sunset"] + DAYLIGHT_BUFFER
+    return earliest_time <= timestamp <= latest_time
