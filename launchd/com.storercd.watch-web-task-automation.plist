@@ -20,9 +20,9 @@
   <integer>900</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.watch-web.stdout.log</string>
+  <string>/Users/christopherstorer/Library/Application Support/daily-task-automation/logs/launchd.watch-web.stdout.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.watch-web.stderr.log</string>
+  <string>/Users/christopherstorer/Library/Application Support/daily-task-automation/logs/launchd.watch-web.stderr.log</string>
 </dict>
 </plist>

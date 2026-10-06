@@ -25,9 +25,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.stdout.log</string>
+  <string>/Users/christopherstorer/Library/Application Support/daily-task-automation/logs/launchd.stdout.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/christopherstorer/github/personal/daily-task-automation/logs/launchd.stderr.log</string>
+  <string>/Users/christopherstorer/Library/Application Support/daily-task-automation/logs/launchd.stderr.log</string>
 </dict>
 </plist>
