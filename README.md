@@ -13,7 +13,7 @@ Behavior:
 - Timed events are still imported, but a warning is printed so the event can be corrected.
 - Duplicate calendar cards are skipped based on a per-occurrence event marker.
 - Open Trello cards with incomplete due dates of today or earlier are moved to `Triage`.
-- Each run records per-date status in `logs/processed_dates.json`.
+- Each run records per-date status in `logs/processed_dates.json` under the [app data directory](#configuration--state-location).
 - LaunchAgent output lines are timestamped, and common token/password patterns are redacted before they reach stdout/stderr logs.
 - If previous dates were missed or failed, the next run backfills those dates automatically before completing today.
 - On first run (when the status file does not exist), the status file is created and only today is processed.
@@ -24,8 +24,39 @@ Behavior:
 1. Create a virtual environment.
 2. Activate it.
 3. Install dependencies from `requirements.txt`.
-4. Copy `.env.example` to `.env`.
+4. Copy `.env.example` to `~/Library/Application Support/daily-task-automation/.env` (see [Configuration & State Location](#configuration--state-location)).
 5. Fill in your Google Calendar secret iCal URL, Trello API key, and Trello token.
+
+## Configuration & State Location
+
+Config (`.env`), watcher state, and the processed-dates log all live outside
+the git checkout, in a single per-user directory:
+
+```
+~/Library/Application Support/daily-task-automation/
+├── .env
+├── logs/processed_dates.json
+└── state/
+    ├── sheet_watchers/
+    └── web_page_watchers/
+```
+
+This directory is created automatically on first run (parent directories
+included) and is **shared by every clone/worktree of this repo** — the code
+you run (main checkout, a feature branch, a Copilot session worktree, etc.)
+only matters for *logic*; it always reads and writes the same real config and
+state. That means you can check out a feature branch, run `python main.py`
+from it, and it affects your actual Trello board/calendar/watchers exactly
+like the production checkout would — no copying `.env` or state files into
+the branch, and no risk of drifting into a stale duplicate.
+
+To use a different profile instead of your real one (e.g. for automated
+tests or a deliberate sandbox run), set `DAILY_TASK_AUTOMATION_HOME` to point
+at an alternate directory before running `main.py`:
+
+```bash
+DAILY_TASK_AUTOMATION_HOME=/tmp/dta-sandbox python main.py
+```
 
 ## Run
 
@@ -63,7 +94,7 @@ Sheet-watch routine configuration (`.env`):
 - `SHEET_WATCHERS`: a JSON array of watched sheet tabs, e.g. `[{"name": "Choir Schedule", "spreadsheet_id": "<id>", "gid": "0"}]`.
   - Each sheet must be shared as "Anyone with the link" (view only) so it can be fetched via the public CSV export endpoint.
   - `spreadsheet_id` and `gid` come from the sheet's URL: `.../spreadsheets/d/<spreadsheet_id>/edit?gid=<gid>`.
-- On the first run for a source, only a baseline snapshot is recorded to `state/sheet_watchers/<name>.csv`; no alert is sent.
+- On the first run for a source, only a baseline snapshot is recorded to `state/sheet_watchers/<name>.csv` under the [app data directory](#configuration--state-location); no alert is sent.
 - Subsequent runs diff the new CSV against the stored snapshot (row-level and cell-level) and create a Trello card in `TRELLO_LIST_NAME` describing the change, deduplicated by a content-hash marker.
 - Alerting is decoupled from detection (see `core/notifiers.py`), so a non-Trello notifier could be added later without changing the fetch/diff logic.
 
@@ -80,7 +111,7 @@ Web-page-watch routine configuration (`.env`):
 - `WEB_PAGE_WATCHERS`: a JSON array of watched pages, e.g. `[{"name": "Competition Schedule", "url": "https://..."}]`.
 - At least one of `SHEET_WATCHERS` or `WEB_PAGE_WATCHERS` must be configured.
 - The page's HTML is reduced to visible text (script/style content stripped), then diffed line-by-line, reusing the same row-diff logic as the sheet watcher (each line is treated as a one-column row).
-- Snapshots are stored in `state/web_page_watchers/<name>.txt`.
+- Snapshots are stored in `state/web_page_watchers/<name>.txt` under the [app data directory](#configuration--state-location).
 - To avoid needlessly re-fetching an unchanged page, requests include `If-None-Match`/`If-Modified-Since` based on the previously observed `ETag`/`Last-Modified` response headers (stored in a `.meta.json` sidecar file). A server that supports conditional requests responds `304 Not Modified` instead of resending the page, so this routine can run more frequently than the sheet-watch routine without generating extra load once nothing has changed. This is why `watch-web` has its own, more frequent LaunchAgent schedule (see below) separate from `watch`.
 
 ## Test
@@ -130,7 +161,7 @@ Files:
 - `launchd/com.storercd.watch-task-automation.plist`
 
 ```bash
-mkdir -p state ~/Library/LaunchAgents
+mkdir -p ~/Library/LaunchAgents
 chmod +x scripts/run_watch_task_automation.sh
 cp launchd/com.storercd.watch-task-automation.plist ~/Library/LaunchAgents/
 launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-task-automation.plist 2>/dev/null || true
@@ -150,7 +181,7 @@ Files:
 - `launchd/com.storercd.watch-web-task-automation.plist`
 
 ```bash
-mkdir -p state ~/Library/LaunchAgents
+mkdir -p ~/Library/LaunchAgents
 chmod +x scripts/run_watch_web_task_automation.sh
 cp launchd/com.storercd.watch-web-task-automation.plist ~/Library/LaunchAgents/
 launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.storercd.watch-web-task-automation.plist 2>/dev/null || true
@@ -165,3 +196,4 @@ launchctl enable gui/"$(id -u)"/com.storercd.watch-web-task-automation
 - Created cards include a metadata marker in the description so reruns can skip duplicates reliably.
 - A project-local `.venv` is recommended so scheduled runs and manual runs use the same interpreter.
 - The top of [main.py](main.py) contains `RUN_CALENDAR_SYNC` and `RUN_DUE_CARD_TRIAGE` switches so either routine can be disabled while testing the other.
+- Because config and state live outside the checkout (see [Configuration & State Location](#configuration--state-location)), you can develop on a feature branch — e.g. in a separate worktree or Copilot session — and run it directly against your real Trello board/calendar/watchers without copying any secrets or snapshots in. Set `DAILY_TASK_AUTOMATION_HOME` if you instead want an isolated sandbox for a given run.
