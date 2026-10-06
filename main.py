@@ -52,9 +52,30 @@ RUN_DUE_CARD_TRIAGE = True
 MAX_REQUEST_ATTEMPTS = 3
 INITIAL_RETRY_DELAY_SECONDS = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-DATE_STATUS_FILE_PATH = Path("logs") / "processed_dates.json"
-SHEET_WATCH_SNAPSHOT_DIR = Path("state") / "sheet_watchers"
-WEB_PAGE_WATCH_SNAPSHOT_DIR = Path("state") / "web_page_watchers"
+
+
+def get_app_data_dir() -> Path:
+    """Return the per-user directory where config, state, and logs live.
+
+    This lives outside the git checkout so the same real `.env`, watcher
+    state, and processed-dates log are shared across every clone/worktree of
+    this repo (e.g. the main checkout and a feature-branch dev session) --
+    only the code differs between checkouts, never the data.
+
+    Override with DAILY_TASK_AUTOMATION_HOME to use a different profile
+    (handy for tests or running a throwaway sandbox instead of the real one).
+    """
+    override = os.getenv("DAILY_TASK_AUTOMATION_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / "Library" / "Application Support" / "daily-task-automation"
+
+
+APP_DATA_DIR = get_app_data_dir()
+ENV_FILE_PATH = APP_DATA_DIR / ".env"
+DATE_STATUS_FILE_PATH = APP_DATA_DIR / "logs" / "processed_dates.json"
+SHEET_WATCH_SNAPSHOT_DIR = APP_DATA_DIR / "state" / "sheet_watchers"
+WEB_PAGE_WATCH_SNAPSHOT_DIR = APP_DATA_DIR / "state" / "web_page_watchers"
 DEFAULT_NOAA_STATION_ID = "9447659"
 DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 MONTHLY_EVENT_DURATION = timedelta(hours=1)
@@ -206,7 +227,7 @@ def load_config() -> Config:
     Raises:
         SyncError: If one or more required environment variables are missing.
     """
-    load_dotenv()
+    load_dotenv(ENV_FILE_PATH)
 
     config = Config(
         ical_url=os.getenv("ICAL_URL", "").strip(),
@@ -235,7 +256,7 @@ def load_config() -> Config:
 
 def load_monthly_config() -> MonthlyConfig:
     """Load and validate required environment variables for monthly tasks."""
-    load_dotenv()
+    load_dotenv(ENV_FILE_PATH)
 
     config = MonthlyConfig(
         noaa_station_id=os.getenv("NOAA_STATION_ID", DEFAULT_NOAA_STATION_ID).strip() or DEFAULT_NOAA_STATION_ID,
@@ -331,7 +352,7 @@ def parse_web_page_sources(sources_json: str) -> list[WebPageSource]:
 
 def load_watch_config() -> WatchConfig:
     """Load and validate required environment variables for the watch routines."""
-    load_dotenv()
+    load_dotenv(ENV_FILE_PATH)
 
     trello_api_key = os.getenv("TRELLO_API_KEY", "").strip()
     trello_api_token = os.getenv("TRELLO_API_TOKEN", "").strip()

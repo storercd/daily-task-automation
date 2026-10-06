@@ -536,7 +536,7 @@ def test_load_watch_config_raises_for_missing_trello_environment_variables(monke
     monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
     monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
     monkeypatch.setenv("SHEET_WATCHERS", '[{"name": "X", "spreadsheet_id": "abc"}]')
-    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(main, "load_dotenv", lambda *args, **kwargs: None)
 
     with pytest.raises(main.SyncError, match="TRELLO_API_KEY"):
         main.load_watch_config()
@@ -549,7 +549,7 @@ def test_load_watch_config_raises_when_no_sources_configured(monkeypatch):
     monkeypatch.setenv("TRELLO_API_TOKEN", "token")
     monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
     monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
-    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(main, "load_dotenv", lambda *args, **kwargs: None)
 
     with pytest.raises(main.SyncError, match="At least one of"):
         main.load_watch_config()
@@ -562,7 +562,7 @@ def test_load_watch_config_accepts_web_page_watchers_only(monkeypatch):
     monkeypatch.setenv("TRELLO_BOARD_NAME", "To Do")
     monkeypatch.setenv("TRELLO_LIST_NAME", "Watch")
     monkeypatch.setenv("WEB_PAGE_WATCHERS", '[{"name": "Schedule", "url": "https://example.com"}]')
-    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(main, "load_dotenv", lambda *args, **kwargs: None)
 
     config = main.load_watch_config()
 
