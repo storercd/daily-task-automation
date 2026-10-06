@@ -3,7 +3,6 @@ from zoneinfo import ZoneInfo
 
 from services import noaa_tides
 
-
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 

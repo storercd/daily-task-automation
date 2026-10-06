@@ -31,10 +31,12 @@ class TimestampedRedactingStream:
     """Proxy a text stream, adding a local timestamp and masking credentials per line."""
 
     def __init__(self, stream: TextIO) -> None:
+        """Wrap the given text stream to buffer and process writes line by line."""
         self.stream = stream
         self.pending_text = ""
 
     def write(self, text: str) -> int:
+        """Buffer written text and flush any complete lines to the wrapped stream."""
         self.pending_text += text
         while "\n" in self.pending_text:
             line, self.pending_text = self.pending_text.split("\n", 1)
@@ -42,6 +44,7 @@ class TimestampedRedactingStream:
         return len(text)
 
     def flush(self) -> None:
+        """Write any buffered partial line and flush the wrapped stream."""
         if self.pending_text:
             self._write_line(self.pending_text)
             self.pending_text = ""
@@ -53,6 +56,7 @@ class TimestampedRedactingStream:
         self.stream.flush()
 
     def __getattr__(self, name: str):
+        """Delegate attribute access not handled above to the wrapped stream."""
         return getattr(self.stream, name)
 
 
