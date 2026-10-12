@@ -24,17 +24,19 @@ Behavior:
 1. Create a virtual environment.
 2. Activate it.
 3. Install dependencies from `requirements.txt`.
-4. Copy `.env.example` to `~/Library/Application Support/daily-task-automation/.env` (see [Configuration & State Location](#configuration--state-location)).
+4. Copy `.env.example` to `~/Library/Application Support/daily-task-automation/config.env` (see [Configuration & State Location](#configuration--state-location)).
 5. Fill in your Google Calendar secret iCal URL, Trello API key, and Trello token.
 
 ## Configuration & State Location
 
-Config (`.env`), watcher state, and the processed-dates log all live outside
+> An older hidden `.env` in this directory is automatically renamed to `config.env` on first run.
+
+Config (`config.env`), watcher state, and the processed-dates log all live outside
 the git checkout, in a single per-user directory:
 
 ```
 ~/Library/Application Support/daily-task-automation/
-├── .env
+├── config.env
 ├── logs/processed_dates.json
 └── state/
     ├── sheet_watchers/
@@ -47,7 +49,7 @@ you run (main checkout, a feature branch, a Copilot session worktree, etc.)
 only matters for *logic*; it always reads and writes the same real config and
 state. That means you can check out a feature branch, run `python main.py`
 from it, and it affects your actual Trello board/calendar/watchers exactly
-like the production checkout would — no copying `.env` or state files into
+like the production checkout would — no copying `config.env` or state files into
 the branch, and no risk of drifting into a stale duplicate.
 
 To use a different profile instead of your real one (e.g. for automated
@@ -72,7 +74,7 @@ source .venv/bin/activate
 python main.py monthly
 ```
 
-Monthly routine configuration (`.env`):
+Monthly routine configuration (`config.env`):
 
 - `NOAA_STATION_ID` (default `9447659`)
 - `LOW_TIDE_CALENDAR_ID` (Google Calendar ID where events are created)
@@ -88,7 +90,7 @@ source .venv/bin/activate
 python main.py watch
 ```
 
-Sheet-watch routine configuration (`.env`):
+Sheet-watch routine configuration (`config.env`):
 
 - Uses the same `TRELLO_API_KEY`, `TRELLO_API_TOKEN`, `TRELLO_BOARD_NAME`, and `TRELLO_LIST_NAME` as the daily routine.
 - `SHEET_WATCHERS`: a JSON array of watched sheet tabs, e.g. `[{"name": "Choir Schedule", "spreadsheet_id": "<id>", "gid": "0"}]`.
@@ -105,7 +107,7 @@ source .venv/bin/activate
 python main.py watch-web
 ```
 
-Web-page-watch routine configuration (`.env`):
+Web-page-watch routine configuration (`config.env`):
 
 - Uses the same Trello settings as the sheet-watch routine.
 - `WEB_PAGE_WATCHERS`: a JSON array of watched pages, e.g. `[{"name": "Competition Schedule", "url": "https://..."}]`.
