@@ -57,7 +57,7 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 def get_app_data_dir() -> Path:
     """Return the per-user directory where config, state, and logs live.
 
-    This lives outside the git checkout so the same real `.env`, watcher
+    This lives outside the git checkout so the same real `config.env`, watcher
     state, and processed-dates log are shared across every clone/worktree of
     this repo (e.g. the main checkout and a feature-branch dev session) --
     only the code differs between checkouts, never the data.
@@ -72,7 +72,8 @@ def get_app_data_dir() -> Path:
 
 
 APP_DATA_DIR = get_app_data_dir()
-ENV_FILE_PATH = APP_DATA_DIR / ".env"
+ENV_FILE_PATH = APP_DATA_DIR / "config.env"
+LEGACY_ENV_FILE_PATH = APP_DATA_DIR / ".env"
 DATE_STATUS_FILE_PATH = APP_DATA_DIR / "logs" / "processed_dates.json"
 SHEET_WATCH_SNAPSHOT_DIR = APP_DATA_DIR / "state" / "sheet_watchers"
 WEB_PAGE_WATCH_SNAPSHOT_DIR = APP_DATA_DIR / "state" / "web_page_watchers"
@@ -92,6 +93,20 @@ TRELLO_SERVICE = TrelloService(HTTP_CLIENT, TRELLO_API_BASE_URL, UID_MARKER_PREF
 SHEET_WATCHER_SERVICE = SheetWatcherService(HTTP_CLIENT)
 WEB_PAGE_WATCHER_SERVICE = WebPageWatcherService(HTTP_CLIENT)
 CONTENT_DIFF_SERVICE = ContentDiffService()
+
+
+def migrate_legacy_env_file() -> None:
+    """Rename the old hidden `.env` to the visible `config.env` if needed."""
+    if LEGACY_ENV_FILE_PATH.is_file() and not ENV_FILE_PATH.exists():
+        ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LEGACY_ENV_FILE_PATH.rename(ENV_FILE_PATH)
+        print(f"Renamed legacy {LEGACY_ENV_FILE_PATH} to {ENV_FILE_PATH}")
+
+
+def load_config_file() -> None:
+    """Load config values, migrating the legacy `.env` file first."""
+    migrate_legacy_env_file()
+    load_dotenv(ENV_FILE_PATH)
 
 
 def ensure_parent_directory(file_path: str) -> None:
@@ -227,7 +242,7 @@ def load_config() -> Config:
     Raises:
         SyncError: If one or more required environment variables are missing.
     """
-    load_dotenv(ENV_FILE_PATH)
+    load_config_file()
 
     config = Config(
         ical_url=os.getenv("ICAL_URL", "").strip(),
@@ -256,7 +271,7 @@ def load_config() -> Config:
 
 def load_monthly_config() -> MonthlyConfig:
     """Load and validate required environment variables for monthly tasks."""
-    load_dotenv(ENV_FILE_PATH)
+    load_config_file()
 
     config = MonthlyConfig(
         noaa_station_id=os.getenv("NOAA_STATION_ID", DEFAULT_NOAA_STATION_ID).strip() or DEFAULT_NOAA_STATION_ID,
@@ -352,7 +367,7 @@ def parse_web_page_sources(sources_json: str) -> list[WebPageSource]:
 
 def load_watch_config() -> WatchConfig:
     """Load and validate required environment variables for the watch routines."""
-    load_dotenv(ENV_FILE_PATH)
+    load_config_file()
 
     trello_api_key = os.getenv("TRELLO_API_KEY", "").strip()
     trello_api_token = os.getenv("TRELLO_API_TOKEN", "").strip()
