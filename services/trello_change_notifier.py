@@ -25,7 +25,7 @@ class TrelloChangeNotifier:
         self.config = config
         self.list_id = list_id
 
-    def notify_change(self, source_name: str, changes: list[RowChange], content_hash: str, unit: str = "row") -> None:
+    def notify_change(self, source_name: str, changes: list[RowChange], content_hash: str, unit: str = "row", source_url: str = "") -> None:
         """Create a deduplicated Trello alert card for the detected changes.
 
         Args:
@@ -33,9 +33,12 @@ class TrelloChangeNotifier:
             changes: Row-level changes detected since the previous snapshot.
             content_hash: Stable hash of the new content, used to avoid duplicate alerts.
             unit: Noun describing one change entry (e.g. "row" or "line").
+            source_url: Link to the watched source, included in the description when provided.
         """
         marker = f"{WATCH_DIFF_MARKER_PREFIX} {source_name}::{content_hash}"
         description = self.content_diff_service.format_change_summary(source_name, changes, unit=unit)
+        if source_url:
+            description = f"Source: {source_url}\n\n{description}"
         self.trello_service.create_alert_card(
             self.config,
             self.list_id,
