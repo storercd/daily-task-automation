@@ -578,7 +578,7 @@ def test_check_sheet_source_records_initial_snapshot_without_alert(monkeypatch, 
     monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-01-01\n")
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash):
+        def notify_change(self, source_name, changes, content_hash, **kwargs):
             notified.append((source_name, changes, content_hash))
 
     main.check_sheet_source(source, FakeNotifier())
@@ -598,7 +598,7 @@ def test_check_sheet_source_notifies_on_change(monkeypatch, tmp_path, watch_conf
     monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-02-15\n")
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash):
+        def notify_change(self, source_name, changes, content_hash, **kwargs):
             notified.append((source_name, changes, content_hash))
 
     main.check_sheet_source(source, FakeNotifier())
@@ -618,7 +618,7 @@ def test_check_sheet_source_skips_alert_when_unchanged(monkeypatch, tmp_path, wa
     monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: "name,date\nAlice,2026-01-01\n")
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash):
+        def notify_change(self, source_name, changes, content_hash, **kwargs):
             raise AssertionError("notify_change should not be called when content is unchanged")
 
     main.check_sheet_source(source, FakeNotifier())
@@ -637,7 +637,7 @@ def test_check_sheet_source_skips_alert_when_raw_text_drifts_but_rows_match(
     monkeypatch.setattr(main, "fetch_sheet_csv", lambda src: 'name,date\n"Alice",2026-01-01\n')
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash):
+        def notify_change(self, source_name, changes, content_hash, **kwargs):
             raise AssertionError("notify_change should not be called when no rows actually changed")
 
     main.check_sheet_source(source, FakeNotifier())
@@ -676,7 +676,7 @@ def test_check_web_page_source_records_initial_snapshot_without_alert(monkeypatc
     monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: ("Event on Jan 1", None, None))
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash, unit="row"):
+        def notify_change(self, source_name, changes, content_hash, unit="row", **kwargs):
             notified.append((source_name, changes, content_hash, unit))
 
     main.check_web_page_source(source, FakeNotifier())
@@ -696,7 +696,7 @@ def test_check_web_page_source_notifies_on_change_with_line_unit(monkeypatch, tm
     monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: ("Event on Feb 15", None, None))
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash, unit="row"):
+        def notify_change(self, source_name, changes, content_hash, unit="row", **kwargs):
             notified.append((source_name, changes, content_hash, unit))
 
     main.check_web_page_source(source, FakeNotifier())
@@ -716,7 +716,7 @@ def test_check_web_page_source_skips_when_not_modified(monkeypatch, tmp_path, wa
     monkeypatch.setattr(main, "fetch_web_page_text", lambda src, etag, last_modified: (None, etag, last_modified))
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash, unit="row"):
+        def notify_change(self, source_name, changes, content_hash, unit="row", **kwargs):
             raise AssertionError("notify_change should not be called when not modified")
 
     main.check_web_page_source(source, FakeNotifier())
@@ -733,7 +733,7 @@ def test_check_web_page_source_persists_conditional_get_metadata(monkeypatch, tm
     )
 
     class FakeNotifier:
-        def notify_change(self, source_name, changes, content_hash, unit="row"):
+        def notify_change(self, source_name, changes, content_hash, unit="row", **kwargs):
             pass
 
     main.check_web_page_source(source, FakeNotifier())

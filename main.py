@@ -950,7 +950,12 @@ def check_sheet_source(source: SheetSource, notifier: ChangeNotifier) -> None:
         print(f"No changes detected for sheet source: {source.name}")
         return
 
-    notifier.notify_change(source.name, changes, hash_sheet_content(current_csv))
+    notifier.notify_change(
+        source.name,
+        changes,
+        hash_sheet_content(current_csv),
+        source_url=f"https://docs.google.com/spreadsheets/d/{source.spreadsheet_id}/edit?gid={source.gid}",
+    )
     save_sheet_snapshot(snapshot_path, current_csv)
     print(f"Detected {len(changes)} row change(s) for sheet source: {source.name}")
 
@@ -995,7 +1000,7 @@ def check_web_page_source(source: WebPageSource, notifier: ChangeNotifier) -> No
         print(f"No changes detected for web page source: {source.name}")
         return
 
-    notifier.notify_change(source.name, changes, hash_web_page_content(current_text), unit="line")
+    notifier.notify_change(source.name, changes, hash_web_page_content(current_text), unit="line", source_url=source.url)
     save_web_page_snapshot(snapshot_path, current_text)
     print(f"Detected {len(changes)} line change(s) for web page source: {source.name}")
 
