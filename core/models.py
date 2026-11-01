@@ -61,6 +61,15 @@ class LowTidePrediction:
 
 
 @dataclass
+class LowTideScan:
+    """Summarize a month of low-tide predictions and how they were filtered."""
+
+    examined_count: int
+    below_threshold: list[LowTidePrediction]
+    in_window: list[LowTidePrediction]
+
+
+@dataclass
 class SheetSource:
     """Identify one publicly readable Google Sheet tab to watch for changes."""
 

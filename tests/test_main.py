@@ -432,16 +432,24 @@ def test_run_monthly_creates_and_skips_existing_events(monkeypatch, timezone, ca
         height_feet=-0.12,
     )
     existing_marker = main.build_low_tide_marker(monthly_config.noaa_station_id, prediction_two)
+    excluded = main.LowTidePrediction(
+        timestamp=datetime(2026, 4, 10, 2, 0, tzinfo=timezone),
+        height_feet=-0.5,
+    )
     created_events = []
+    summary_calls = []
 
     monkeypatch.setattr(main, "load_monthly_config", lambda: monthly_config)
     monkeypatch.setattr(main, "get_local_timezone", lambda: timezone)
     monkeypatch.setattr(main, "build_month_bounds", lambda current_date: (month_start, month_end))
     monkeypatch.setattr(
         main.NOAA_TIDE_SERVICE,
-        "fetch_negative_low_tides",
-        lambda station_id, month_start, month_end, timezone: [prediction_one, prediction_two],
+        "scan_low_tides",
+        lambda station_id, month_start, month_end, timezone: main.LowTideScan(
+            30, [prediction_one, prediction_two, excluded], [prediction_one, prediction_two]
+        ),
     )
+    monkeypatch.setattr(main, "send_monthly_summary_card", lambda *args: summary_calls.append(args))
     monkeypatch.setattr(main.GOOGLE_CALENDAR_EVENT_SERVICE, "get_access_token", lambda config: "token")
     monkeypatch.setattr(
         main.GOOGLE_CALENDAR_EVENT_SERVICE,
@@ -465,6 +473,10 @@ def test_run_monthly_creates_and_skips_existing_events(monkeypatch, timezone, ca
 
     output = capsys.readouterr().out
     assert "1 created, 1 skipped" in output
+    assert "Excluded low tide -0.50" in output
+    assert "Low tides examined: 30" in output
+    assert "Under threshold (below 0 ft): 3" in output
+    assert len(summary_calls) == 1
 
 
 def test_run_monthly_returns_zero_when_no_negative_low_tides(monkeypatch, timezone, capsys):
@@ -485,13 +497,14 @@ def test_run_monthly_returns_zero_when_no_negative_low_tides(monkeypatch, timezo
     monkeypatch.setattr(main, "build_month_bounds", lambda current_date: (month_start, month_end))
     monkeypatch.setattr(
         main.NOAA_TIDE_SERVICE,
-        "fetch_negative_low_tides",
-        lambda station_id, month_start, month_end, timezone: [],
+        "scan_low_tides",
+        lambda station_id, month_start, month_end, timezone: main.LowTideScan(28, [], []),
     )
+    monkeypatch.setattr(main, "send_monthly_summary_card", lambda *args: None)
 
     assert main.run_monthly() == 0
     output = capsys.readouterr().out
-    assert "No negative low tides found" in output
+    assert "No negative low tides within the time window" in output
 
 
 @pytest.fixture

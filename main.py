@@ -25,6 +25,7 @@ from core.models import (
     CalendarEvent,
     Config,
     LowTidePrediction,
+    LowTideScan,
     MonthlyConfig,
     RowChange,
     SheetSource,
@@ -46,6 +47,7 @@ from services.web_page_watcher import WebPageWatcherService
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 UID_MARKER_PREFIX = "GCAL-UID:"
 LOW_TIDE_MARKER_PREFIX = "LOW-TIDE-KEY:"
+MONTHLY_SUMMARY_MARKER_PREFIX = "MONTHLY-SUMMARY-KEY:"
 FAILURE_ALERT_MARKER_PREFIX = "FAILURE-ALERT-KEY:"
 RUN_CALENDAR_SYNC = True
 RUN_DUE_CARD_TRIAGE = True
@@ -864,17 +866,28 @@ def run_monthly(target_month_date: date | None = None) -> int:
         target_month_date = current_month_end + timedelta(days=1)
     month_start, month_end = build_month_bounds(target_month_date)
 
-    predictions = NOAA_TIDE_SERVICE.fetch_negative_low_tides(
+    scan = NOAA_TIDE_SERVICE.scan_low_tides(
         config.noaa_station_id,
         month_start,
         month_end,
         timezone,
     )
+    predictions = scan.in_window
+    month_label = month_start.strftime("%Y-%m")
+    in_window_timestamps = {prediction.timestamp for prediction in predictions}
+    for tide in scan.below_threshold:
+        if tide.timestamp not in in_window_timestamps:
+            print(
+                f"Excluded low tide {tide.height_feet:.2f} at {tide.timestamp.isoformat()}: "
+                "outside time window"
+            )
     if not predictions:
         print(
-            f"No negative low tides found for {month_start.strftime('%Y-%m')} "
+            f"No negative low tides within the time window for {month_label} "
             f"at station {config.noaa_station_id}."
         )
+        print(format_low_tide_summary(scan, 0, 0, month_label))
+        send_monthly_summary_card(scan, 0, 0, month_label)
         return 0
 
     access_token = GOOGLE_CALENDAR_EVENT_SERVICE.get_access_token(config)
@@ -915,9 +928,43 @@ def run_monthly(target_month_date: date | None = None) -> int:
 
     print(
         f"Monthly low-tide task processed {len(predictions)} prediction(s) for "
-        f"{month_start.strftime('%Y-%m')}: {created_count} created, {skipped_count} skipped."
+        f"{month_label}: {created_count} created, {skipped_count} skipped."
     )
+    print(format_low_tide_summary(scan, created_count, skipped_count, month_label))
+    send_monthly_summary_card(scan, created_count, skipped_count, month_label)
     return 0
+
+
+def format_low_tide_summary(scan: LowTideScan, created_count: int, skipped_count: int, month_label: str) -> str:
+    """Build a human-readable summary of a monthly low-tide run."""
+    excluded_count = len(scan.below_threshold) - len(scan.in_window)
+    return (
+        f"Low-tide summary for {month_label}:\n"
+        f"- Low tides examined: {scan.examined_count}\n"
+        f"- Under threshold (below 0 ft): {len(scan.below_threshold)}\n"
+        f"- Excluded (outside time window): {excluded_count}\n"
+        f"- In time window: {len(scan.in_window)}\n"
+        f"- Calendar events created: {created_count}\n"
+        f"- Already existed (skipped): {skipped_count}"
+    )
+
+
+def send_monthly_summary_card(scan: LowTideScan, created_count: int, skipped_count: int, month_label: str) -> None:
+    """Create a Trello summary card for the monthly run; failures are logged, not raised."""
+    try:
+        config = load_config()
+        board_id = find_board_id(config)
+        list_id = find_list_id(config, board_id)
+        run_key = get_current_date().isoformat()
+        TRELLO_SERVICE.create_alert_card(
+            config,
+            list_id,
+            f"[SUMMARY] Monthly low-tide run for {month_label}",
+            format_low_tide_summary(scan, created_count, skipped_count, month_label),
+            f"{MONTHLY_SUMMARY_MARKER_PREFIX} {month_label}::{run_key}",
+        )
+    except Exception as summary_error:
+        print(f"Failed to create monthly summary card: {summary_error}", file=sys.stderr)
 
 
 def check_sheet_source(source: SheetSource, notifier: ChangeNotifier) -> None:
