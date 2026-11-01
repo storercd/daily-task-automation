@@ -9,7 +9,7 @@ from astral import Observer
 from astral.sun import sun
 
 from core.errors import SyncError
-from core.models import LowTidePrediction
+from core.models import LowTidePrediction, LowTideScan
 from services.http_client import HttpClient
 
 EVERETT_OBSERVER = Observer(latitude=47.97898, longitude=-122.20208)
@@ -30,7 +30,17 @@ class NoaaTideService:
         month_end: date,
         timezone: ZoneInfo,
     ) -> list[LowTidePrediction]:
-        """Return low-tide predictions below 0 feet for a month."""
+        """Return low-tide predictions below 0 feet within waking hours for a month."""
+        return self.scan_low_tides(station_id, month_start, month_end, timezone).in_window
+
+    def scan_low_tides(
+        self,
+        station_id: str,
+        month_start: date,
+        month_end: date,
+        timezone: ZoneInfo,
+    ) -> LowTideScan:
+        """Examine all low tides for a month and report threshold and time-window filtering."""
         response = self.http_client.request_with_backoff(
             "GET",
             "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter",
@@ -58,7 +68,9 @@ class NoaaTideService:
         if not isinstance(predictions, list):
             raise SyncError("NOAA tide API response missing predictions list")
 
-        negative_low_tides: list[LowTidePrediction] = []
+        examined_count = 0
+        below_threshold: list[LowTidePrediction] = []
+        in_window: list[LowTidePrediction] = []
         for prediction in predictions:
             tide_type = str(prediction.get("type", "")).strip().upper()
             if tide_type != "L":
@@ -69,19 +81,18 @@ class NoaaTideService:
             if not height_text or not timestamp_text:
                 continue
 
+            examined_count += 1
             height_feet = float(height_text)
             if height_feet >= 0:
                 continue
 
             local_timestamp = datetime.strptime(timestamp_text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone)
-            if not is_within_waking_hours(local_timestamp, timezone):
-                continue
+            tide = LowTidePrediction(timestamp=local_timestamp, height_feet=height_feet)
+            below_threshold.append(tide)
+            if is_within_waking_hours(local_timestamp, timezone):
+                in_window.append(tide)
 
-            negative_low_tides.append(
-                LowTidePrediction(timestamp=local_timestamp, height_feet=height_feet)
-            )
-
-        return negative_low_tides
+        return LowTideScan(examined_count, below_threshold, in_window)
 
 
 def is_within_waking_hours(timestamp: datetime, timezone: ZoneInfo) -> bool:
