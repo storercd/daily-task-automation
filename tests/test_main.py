@@ -173,6 +173,34 @@ def test_create_card_retries_transient_failure_then_succeeds(monkeypatch, config
     assert sleeps == [2]
 
 
+def test_create_card_applies_label_from_title_or_description(monkeypatch, config):
+    calls = []
+
+    def fake_trello_request(method, path, api_key, api_token, allow_retries=True, **kwargs):
+        calls.append((method, path, kwargs.get("params")))
+        if path == "/members/me/boards":
+            return [{"id": "board-1", "name": "To Do"}]
+        if path == "/boards/board-1/labels":
+            return [{"id": "l-1", "name": "Luna", "color": "orange"}, {"id": "l-2", "name": "", "color": "red"}]
+        return {"id": "card-1"}
+
+    monkeypatch.setattr(main.TRELLO_SERVICE, "request", fake_trello_request)
+    event = main.CalendarEvent("u", "u::d", "Pump check [label:luna]", "Notes [label:Missing]", True)
+
+    assert main.create_card(config, "list-1", event) is True
+
+    card_params = calls[-1][2]
+    assert calls[-1][:2] == ("POST", "/cards")
+    assert card_params["idLabels"] == "l-1"
+    assert card_params["name"] == "Pump check"
+
+
+def test_extract_label_names_dedupes_and_ignores_untagged():
+    from services.trello import extract_label_names
+
+    assert extract_label_names("A [label:Luna]", "[Label: luna] [label:Sol]", "none") == ["Luna", "Sol"]
+
+
 def test_create_card_recovers_when_card_exists_after_failure(monkeypatch, config, sample_event, capsys):
     def fake_trello_request(method, path, api_key, api_token, allow_retries=True, **kwargs):
         raise requests.ConnectionError("reset")
