@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,6 +10,23 @@ from zoneinfo import ZoneInfo
 from core.errors import SyncError
 from core.models import CalendarEvent, Config, TrelloCard
 from services.http_client import HttpClient
+
+LABEL_TAG_PATTERN = re.compile(r"\[label:\s*([^\]]+?)\s*\]", re.IGNORECASE)
+
+
+def extract_label_names(*texts: str) -> list[str]:
+    """Return unique label names from `[label:NAME]` tags, preserving first-seen order."""
+    names: list[str] = []
+    for text in texts:
+        for name in LABEL_TAG_PATTERN.findall(text or ""):
+            if name.lower() not in [existing.lower() for existing in names]:
+                names.append(name)
+    return names
+
+
+def strip_label_tags(text: str) -> str:
+    """Remove `[label:NAME]` tags and tidy leftover whitespace."""
+    return re.sub(r"\s{2,}", " ", LABEL_TAG_PATTERN.sub("", text or "")).strip()
 
 
 class TrelloService:
@@ -190,14 +208,48 @@ class TrelloService:
         existing_event_keys, _ = self.load_existing_event_markers(config, list_id)
         return event_key in existing_event_keys
 
+    def resolve_label_ids(self, config: Config, label_names: list[str]) -> list[str]:
+        """Resolve label names (case-insensitive) to IDs on the configured board.
+
+        Names that do not exist on the board are skipped with a warning.
+        """
+        if not label_names:
+            return []
+        board_id = self.find_board_id(config)
+        board_labels = self.request(
+            "GET",
+            f"/boards/{board_id}/labels",
+            config.trello_api_key,
+            config.trello_api_token,
+            params={"fields": "name,color", "limit": 1000},
+        )
+        ids_by_name = {
+            label["name"].strip().lower(): label["id"] for label in board_labels if label.get("name", "").strip()
+        }
+        label_ids: list[str] = []
+        for name in label_names:
+            label_id = ids_by_name.get(name.lower())
+            if label_id is None:
+                print(f"Label not found on board {config.trello_board_name}: {name}", file=sys.stderr)
+            elif label_id not in label_ids:
+                label_ids.append(label_id)
+        return label_ids
+
     def create_card(self, config: Config, list_id: str, event: CalendarEvent) -> bool:
-        """Create a Trello card for an event with transient-error recovery."""
+        """Create a Trello card for an event with transient-error recovery.
+
+        `[label:NAME]` tags in the event title or description apply matching board labels;
+        tags are removed from the card title.
+        """
         card_params = {
             "idList": list_id,
-            "name": event.summary,
+            "name": strip_label_tags(event.summary) or event.summary,
             "desc": self.build_card_description(event),
             "pos": "top",
         }
+        label_ids = self.resolve_label_ids(config, extract_label_names(event.summary, event.description))
+        if label_ids:
+            card_params["idLabels"] = ",".join(label_ids)
 
         for attempt_number in range(1, self.http_client.max_attempts + 1):
             try:
